@@ -1,5 +1,9 @@
 # Building a corpus with Mori
 
+## Independent repository
+
+This project has its own Git repository. Before any staging, commit or push, verify that `git rev-parse --show-toplevel` resolves to this project's root and that `origin` is the intended project repository. Never run those operations against a containing workspace repository. Parent-workspace backup/housekeeping and this project's release workflow are separate. Use explicit public-safe paths when staging, and preserve ignored corpus, credential and run directories. The initial publication snapshot under `.local/public-source/`, if present, is historical; do not publish from a stale duplicate checkout.
+
 Mori's public contract is `mori.context.v1`. Read `docs/UNITS.md` and `docs/ADAPTERS.md` before adding sources. Never use this repository's example sources as factual research evidence: they are invented teaching fixtures.
 
 1. Identify the user's source collection, retrieval question, privacy requirements and allowed provider destinations. Do not upload private sources just because a provider is configured.

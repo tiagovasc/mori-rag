@@ -1,5 +1,9 @@
 # Changelog
 
+## Repository boundary — 2026-10-22
+
+The project working folder now has its own independent Git root, index, objects and remote. The containing workspace excludes this complete project tree. No submodule, shared worktree, linked object store or parent index mutation was introduced. The initial publishing checkout remains preserved as historical evidence; ongoing releases use this project root with an explicit boundary guard. Its initial release history was preserved when setting up the working repository. No application behavior changed.
+
 ## 0.1.0 — 2026-10-22
 
 Initial source-aware RAG release: immutable portable source units and summaries, exact chunk offsets, local/ONNX/HTTP embeddings, independent Jev passage/summary ranking, a normalized 0–100 qualitative rubric, optional disabled LLM reranking, configurable full-source/summary/passage packets, context budgets, local upload UI, portable answer handoff and an optional Codex SDK bridge.
