@@ -1,0 +1,14 @@
+# Explicit offline fixture. Hash vectors are NOT semantic embeddings.
+embedding = "demo"
+embedding_model = "lexical-hash-fixture-v1"
+retrieval_k = 500
+jev_k = 100
+final_passages = 20
+full_units = 1
+summaries = 5
+chunk_words = 40
+chunk_overlap = 8
+min_relevance = 0.0
+summary_min_relevance = 0.0
+# Demo ingestion is offline; query still requires a real Jev key unless a test injects a scorer.
+llm = "none"

@@ -1,0 +1,4 @@
+# Lightweight local option. Requires the [local] extra; no embedding API key.
+embedding = "local"
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+llm = "none"

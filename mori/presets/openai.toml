@@ -1,0 +1,7 @@
+# Quality-first hosted embeddings. Set OPENAI_API_KEY on the server.
+embedding = "http"
+embedding_model = "text-embedding-3-large"
+embedding_url = "https://api.openai.com/v1/embeddings"
+embedding_key_env = "OPENAI_API_KEY"
+embedding_dimensions = 3072
+llm = "none"

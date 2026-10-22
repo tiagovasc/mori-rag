@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mori-rag"
+version = "0.1.0"
+description = "Source-aware RAG with Jev ranking, complete units, and summaries"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Mori contributors"}]
+dependencies = []
+
+[project.optional-dependencies]
+local = ["sentence-transformers>=3.4,<6"]
+onnx = ["onnxruntime>=1.20,<2", "tokenizers>=0.21,<1", "numpy>=1.26,<3"]
+pdf = ["pypdf>=5,<7"]
+dev = ["build>=1.2,<2"]
+
+[project.scripts]
+mori = "mori.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mori*"]
+
+[tool.setuptools.package-data]
+mori = ["static/*", "presets/*.toml"]

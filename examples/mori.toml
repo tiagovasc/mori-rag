@@ -1,0 +1,21 @@
+# All unspecified fields keep the documented defaults.
+retrieval_k = 500
+jev_k = 100
+final_passages = 100
+full_units = 1
+summaries = 5
+min_relevance = 40.0
+summary_min_relevance = 40.0
+summary_candidates = 0
+rerank_enabled = false
+rerank_k = 20
+rating_neighbors = 0
+answer_neighbors = 0
+exclude_full_unit_passages = true
+context_max_chars = 180000
+llm_max_input_chars = 200000
+max_rating_calls = 2000
+embedding = "local"
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+jev_model = "jev-latest"
+llm = "none"

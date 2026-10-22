@@ -1,0 +1,6 @@
+{
+  "name": "mori-codex-bridge",
+  "private": true,
+  "type": "module",
+  "dependencies": {"@openai/codex-sdk": "0.160.1"}
+}

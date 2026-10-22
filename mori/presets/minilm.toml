@@ -1,0 +1,4 @@
+# Speed-first local embeddings. pip install -e ".[local]"
+embedding = "local"
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+llm = "none"

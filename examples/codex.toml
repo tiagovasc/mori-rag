@@ -1,0 +1,6 @@
+# Run commands from the project root; authenticate Codex separately.
+embedding = "local"
+llm = "command"
+llm_model = "gpt-6.1-sol"
+llm_command = ["node", "adapters/codex/bridge.mjs"]
+timeout = 300
