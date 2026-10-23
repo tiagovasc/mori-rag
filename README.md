@@ -77,6 +77,8 @@ Open **http://127.0.0.1:8840**. Upload source units, adjust counts and context o
 
 Open **Sources** inside the question box, just above **Evidence settings**, to choose what to search. Select any combination with the checkboxes, or use Select all / Select none. The menu starts collapsed and shows the selected-source count while closed. Both the budget and the complete retrieval pipeline use that selection, including full units, summaries and neighboring passages. Empty or unavailable selections block submission. Saved inquiries retain their source selection; adapters can expose named collection groups through the same interface.
 
+A live progress panel shows each step from source preparation through retrieval, relevance scoring, evidence assembly, answering, citation checks and saving. Passage and summary counters advance as individual ratings finish, including reused cached decisions. Optional steps are marked skipped; failed steps retain the completed work. The bar measures workflow completion, not time remaining. Elapsed time and connection status remain visible during longer model calls, and progress polling retries automatically after a temporary connection failure.
+
 The repository is installed from source; the package is not claimed to be published to PyPI. A network-free installation/test of the core is `python -m pip install -e .` followed by the test command below. `examples/demo.toml` uses explicitly labelled lexical hash vectors for fixtures, not semantic search.
 
 ## Choose your embeddings

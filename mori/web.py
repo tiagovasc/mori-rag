@@ -1,5 +1,6 @@
 """Loopback-only research room. This is deliberately not a public SaaS server."""
 import base64
+from copy import deepcopy
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -13,6 +14,7 @@ from .config import Config
 from .ingest import ingest, load_file
 from .pipeline import plan, query
 from .providers import Embeddings, LLM
+from .progress import Progress, UPLOAD_STEPS
 
 UI_FIELDS = {'retrieval_k', 'jev_k', 'final_passages', 'full_units', 'summaries', 'min_relevance',
              'summary_min_relevance', 'summary_candidates', 'rerank_enabled', 'rerank_k',
@@ -27,7 +29,19 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
     origin = f'http://127.0.0.1:{port}'
     static = Path(__file__).parent / 'static'
     state, lock = {'status': 'idle'}, threading.Lock()
+    state_lock = threading.Lock()
     embedding_provider = None
+
+    def job_snapshot():
+        with state_lock:
+            return deepcopy(state)
+
+    def update_progress(snapshot):
+        # Publish terminal success together with its result, never as a running
+        # job displaying 100%. No model or operation lock is held by readers.
+        if snapshot['percent'] != 100:
+            with state_lock:
+                state['progress'] = snapshot
 
     def embeddings():
         nonlocal embedding_provider
@@ -73,7 +87,7 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
             parts = urlsplit(self.path)
             path = parts.path
             if path == '/api/state':
-                return self.send(200, {'stats': store.stats(), 'job': state.copy(),
+                return self.send(200, {'stats': store.stats(), 'job': job_snapshot(),
                                       'sources': store.source_catalog(), 'allow_uploads': allow_uploads,
                                       'settings': {k: getattr(config, k) for k in sorted(UI_FIELDS)},
                                       'providers': {'embedding': config.embedding, 'llm': config.llm, 'model': config.llm_model}})
@@ -140,7 +154,8 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
                     if type(body.get('answer', False)) is not bool:
                         lock.release()
                         raise ValueError('answer must be a boolean')
-                    action = lambda: query(selected, question, active, embeddings=embeddings(), answer=body.get('answer', False))
+                    action = lambda: query(selected, question, active, embeddings=embeddings(),
+                                           answer=body.get('answer', False), progress=progress)
                 else:
                     try:
                         name = body.get('filename', '')
@@ -160,6 +175,8 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
                         target.parent.mkdir(exist_ok=True)
                         target.write_bytes(data)
                         def import_upload():
+                            progress.complete('prepare')
+                            progress.start('read', message='Extracting the supplied file into source units.')
                             units = load_file(target, body.get('split', 'whole'))
                             if suffix != '.jsonl':
                                 for index, unit in enumerate(units, 1):
@@ -167,22 +184,44 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
                                         unit['title'] = Path(name).stem
                                     unit['locator'] = f'{Path(name).name} / unit {index}'
                                     unit['metadata']['filename'] = Path(name).name
-                            return ingest(store, units, active, embeddings(), LLM(active), body.get('summarize', False))
+                            progress.complete('read')
+                            progress.start('import', message='Preparing embeddings and importing units. Per-unit progress is not available for this step.')
+                            result = ingest(store, units, active, embeddings(), LLM(active), body.get('summarize', False))
+                            progress.complete('import')
+                            progress.start('save', message='Confirming the stored index is readable.')
+                            store.stats()
+                            progress.complete('save')
+                            progress.finish()
+                            return result
                         action = import_upload
                     except Exception:
                         lock.release()
                         raise
-                state.clear()
-                state.update(status='running')
+                progress = Progress(update_progress) if path == '/api/query' else Progress(update_progress, UPLOAD_STEPS)
+                initial_progress = progress.snapshot()
+                with state_lock:
+                    state.clear()
+                    state.update(status='running', kind='query' if path == '/api/query' else 'upload',
+                                 progress=initial_progress)
+                progress.start('prepare', message='Preparing the operation and starting configured providers.')
 
                 def worker():
                     try:
                         result = action()
-                        state.update(status='complete', result=result)
+                        final_progress = progress.snapshot()
+                        with state_lock:
+                            state.update(status='complete', result=result, progress=final_progress)
                     except (ValueError, RuntimeError) as exc:
-                        state.update(status='failed', error=str(exc))
+                        progress.fail()
+                        final_progress = progress.snapshot()
+                        with state_lock:
+                            state.update(status='failed', error=str(exc), progress=final_progress)
                     except Exception:
-                        state.update(status='failed', error='Operation failed; inspect local configuration and source contract')
+                        progress.fail()
+                        final_progress = progress.snapshot()
+                        with state_lock:
+                            state.update(status='failed', error='Operation failed; inspect local configuration and source contract',
+                                         progress=final_progress)
                     finally:
                         lock.release()
                 threading.Thread(target=worker, daemon=True).start()

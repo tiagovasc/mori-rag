@@ -20,6 +20,8 @@ Reusable application source, documentation, provider adapters, authored example 
 
 `mori/` owns configuration, ingestion, storage, providers, retrieval and local UI. `docs/` explains contracts and extension points. `examples/` contains explicitly distributable synthetic sources and configurations. `tests/` verifies actual pipeline boundaries without paid calls.
 
+`mori/progress.py` supplies source-free, thread-safe workflow snapshots for queries and local-server imports. `tests/test_progress.py` verifies actual completion order, failures and live HTTP polling; frontend behavior remains covered by `tests/test_frontend.py`. Progress observers are optional and do not change the evidence contract.
+
 # How to Add or Edit
 
 Follow [AGENTS.md](AGENTS.md). Update the relevant public guide and behavioral tests together. Local corpus and run directories default to `.mori/`; do not commit them. Public release and limitations are recorded in the changelog.

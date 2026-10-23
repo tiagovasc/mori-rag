@@ -33,6 +33,7 @@ function browser(options={}) {
     append(...children){this.children.push(...children);}
     replaceChildren(...children){this._text='';this.children=[...children];}
     setAttribute(key,value){this.attributes[key]=String(value);}
+    removeAttribute(key){delete this.attributes[key];if(key==='value')this.value=undefined;}
     addEventListener(name,listener){(this.events[name]??=[]).push(listener);}
     async emit(name){for(const listener of this.events[name]||[])await listener({target:this,preventDefault(){}});}
     focus(){} scrollIntoView(){}
@@ -46,22 +47,34 @@ function browser(options={}) {
   const settings={retrieval_k:500,jev_k:100,final_passages:20,full_units:1,summaries:5,min_relevance:0,summary_min_relevance:0,summary_candidates:0,rerank_k:20,rating_neighbors:0,answer_neighbors:0,rerank_enabled:false,exclude_full_unit_passages:true};
   const server={
     state:{stats:{units:4,chunks:10},settings,providers:{embedding:'demo',llm:'none'},job:{status:'idle'},sources:[alpha,beta],allow_uploads:true,...options.state},
-    stateGate:options.stateGate,runReplies:{},requests:[],timers:[],
+    stateGate:options.stateGate,runReplies:{},requests:[],timers:[],intervals:[],
     plan:{candidate_passages:10,summary_ratings:4,rating_attempt_ceiling:14,full_units:1,summaries:2,final_passage_cap:10},query:{},
   };
   const fetch=async(path,options)=>{
     const body=options?.body?JSON.parse(options.body):undefined;server.requests.push({path,body});
     let value;
-    if(path==='/api/state'){if(server.stateGate)await server.stateGate.promise;if(server.stateError)throw server.stateError;value=server.state;}
-    else if(path==='/api/runs'){if(server.runsError)throw server.runsError;value=[];}
+    if(path==='/api/state'){
+      if(server.hangState)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(Object.assign(Error('Aborted'),{name:'AbortError'}))));
+      if(server.stateGate)await server.stateGate.promise;if(server.stateError)throw server.stateError;value=server.state;
+    }
+    else if(path==='/api/runs'){if(server.runsGate)await server.runsGate.promise;if(server.runsError)throw server.runsError;value=[];}
     else if(path.startsWith('/api/runs/')){value=server.runReplies[decodeURIComponent(path.slice('/api/runs/'.length))];assert.ok(value,'Unknown synthetic run');}
     else if(path==='/api/plan')value=server.plan;
     else if(path==='/api/query')value=server.query;
+    else if(path==='/api/upload')value=server.upload;
     else throw Error('Unexpected request: '+path);
     if(typeof value==='function')value=await value();
-    return {ok:!value?.error,json:async()=>value};
+    return {ok:!value?.error,status:value?.httpStatus||200,json:async()=>value};
   };
-  const context=vm.createContext({document,fetch,location:{search:options.search||''},URLSearchParams,setTimeout:fn=>server.timers.push(fn)});
+  class FileReader {
+    readAsDataURL(){Promise.resolve(server.fileGate?.promise).then(()=>{this.result='data:text/plain;base64,e30=';this.onload();});}
+  }
+  const context=vm.createContext({document,fetch,FileReader,location:{search:options.search||''},URLSearchParams,setTimeout:fn=>server.timers.push(fn),setInterval:fn=>server.intervals.push(fn)});
+  if(options.abort){
+    context.AbortController=AbortController;
+    context.setTimeout=fn=>{server.timers.push(fn);return fn;};
+    context.clearTimeout=fn=>{const index=server.timers.indexOf(fn);if(index>=0)server.timers.splice(index,1);};
+  }
   vm.runInContext(script,context);
   const el=id=>document.getElementById(id);
   const inputs=()=>el('source-options').children.map(label=>label.children[0]);
@@ -211,8 +224,158 @@ assert.deepEqual(app.selected(),['alpha','beta']);
 const running=browser({state:{job:{status:'running'}}});await settle();assertQueryDisabled(running,true);
 assert.equal(running.el('source-picker').disabled,true);assert.equal(running.server.timers.length,1);
 const historyFailure=browser({state:{job:{status:'running'}}});historyFailure.server.runsError=Error('History unavailable');
-await settle();assertQueryDisabled(historyFailure,true);assert.match(historyFailure.el('status').textContent,/History unavailable/);
+await settle();assertQueryDisabled(historyFailure,true);assert.match(historyFailure.el('history-status').textContent,/History unavailable/);
 assert.equal(historyFailure.el('source-picker').disabled,true);
+assert.equal(historyFailure.server.timers.length,1);
+""")
+
+    def test_progress_renders_real_counts_and_incremental_steps(self):
+        self.run_ui(r"""
+const started=new Date(Date.now()-65000).toISOString();
+const progress={started_at:started,updated_at:new Date().toISOString(),finished_at:null,percent:20,current_stage:'rate_passages',steps:[
+ {id:'prepare',label:'Prepare sources',status:'complete',completed:null,total:null,cached:0,message:''},
+ {id:'rate_passages',label:'Score passages',status:'running',completed:42,total:500,cached:12,message:'Ranking relevance'},
+ {id:'answer',label:'Write answer',status:'pending',completed:null,total:null,cached:0,message:''},
+]};
+const app=browser({state:{job:{status:'running',kind:'query',progress}}});await settle();
+assert.equal(app.el('workflow').hidden,false);assert.equal(app.el('workflow-progress').value,20);
+assert.equal(app.el('workflow-current').textContent,'Score passages');assert.match(app.el('workflow-summary').textContent,/1 of 3 steps finished/);
+assert.match(app.el('workflow-steps').children[1].textContent,/42 \/ 500 passages scored · 12 reused from cache/);
+assert.match(app.el('workflow-elapsed').textContent,/1m \d+s elapsed/);
+assert.equal(app.el('workflow-steps').children[0].dataset.state,'complete');
+progress.steps[1].completed=73;progress.percent=23;await app.refresh();
+assert.equal(app.el('workflow-progress').value,23);assert.match(app.el('workflow-announcement').textContent,/73 \/ 500/);
+assert.equal(app.el('workflow-steps').children[2].dataset.state,'pending');assertQueryDisabled(app,true);
+""")
+
+    def test_progress_completion_failure_and_new_query_reset(self):
+        self.run_ui(r"""
+const stamp=new Date().toISOString(),progress={started_at:stamp,updated_at:stamp,finished_at:stamp,percent:100,current_stage:null,steps:[
+ {id:'rerank',label:'Rerank',status:'skipped',message:'Not requested'},
+ {id:'save',label:'Save inquiry',status:'complete',message:''},
+]};
+const app=browser({state:{job:{status:'complete',result:{run_id:'done'},progress}}});
+app.server.runReplies.done=packet('done',[alpha]);await settle();
+assert.equal(app.el('workflow-progress').value,100);assert.equal(app.el('workflow-title').textContent,'Inquiry complete');
+assert.equal(app.el('workflow-steps').children[0].dataset.state,'skipped');assert.equal(app.el('result').hidden,false);assertQueryDisabled(app,false);
+app.server.query=()=>{app.server.state.job={status:'running',kind:'query'};return {};};await app.click('answer');await settle();
+assert.equal(app.el('workflow-progress').value,undefined);assert.equal(app.el('workflow-steps').children.length,0);
+assert.equal(app.el('workflow-title').textContent,'Building your inquiry');assert.equal(app.el('result').hidden,true);assertQueryDisabled(app,true);
+app.server.state.job={status:'failed',error:'Provider failed',progress:{...progress,percent:30,steps:[{id:'answer',label:'Write answer',status:'failed',message:'Provider failed'}]}};
+app.server.timers.shift()();await settle();
+assert.equal(app.el('workflow-title').textContent,'Inquiry stopped');assert.equal(app.el('workflow-progress').value,30);
+assert.equal(app.el('workflow-steps').children[0].dataset.state,'failed');assert.match(app.el('status').textContent,/Provider failed/);assertQueryDisabled(app,false);
+""")
+
+    def test_progress_legacy_malformed_and_injection_are_safe(self):
+        self.run_ui(r"""
+const app=browser({state:{job:{status:'running'}}});await settle();
+assert.equal(app.el('workflow-progress').value,undefined);assert.match(app.el('workflow-note').textContent,/not reported individual steps/);
+app.server.state.job.progress={percent:'75',started_at:'invalid',updated_at:'invalid',steps:[null,3,{},
+ {id:'odd',label:'<script>bad()</script>',status:'made-up',completed:-4,total:'30',cached:-1,message:'<img onerror=bad()>'}]};
+await app.refresh();assert.equal(app.el('workflow-progress').value,undefined);
+const row=app.el('workflow-steps').children[0];assert.equal(row.dataset.state,'pending');
+assert.match(row.textContent,/<script>bad\(\)<\/script>/);assert.match(row.textContent,/<img onerror=bad\(\)>/);
+assert.doesNotMatch(row.textContent,/-4|30|reused/);
+app.server.state.job.progress.percent=Infinity;await app.refresh();assert.equal(app.el('workflow-progress').value,undefined);
+""")
+
+    def test_progress_retries_connection_loss_and_history_does_not_block(self):
+        self.run_ui(r"""
+const app=browser({state:{job:{status:'running',progress:{percent:25,steps:[]}}}});await settle();
+app.server.stateError=Error('Connection dropped');app.server.timers.shift()();await settle();
+assert.equal(app.el('workflow-progress').value,25);assertQueryDisabled(app,true);
+assert.match(app.el('workflow-connection').textContent,/Connection interrupted/);assert.match(app.el('status').textContent,/Retrying automatically/);
+assert.equal(app.server.timers.length,1);
+app.server.stateError=null;app.server.runsGate=deferred();app.server.state.job.progress.percent=35;
+app.server.timers.shift()();await settle();assert.equal(app.el('workflow-progress').value,35);
+assert.match(app.el('workflow-connection').textContent,/Connected/);assert.equal(app.server.timers.length,1);
+app.server.runsGate.resolve();await settle();
+app.server.runsError=Error('History unavailable');app.server.state.job.progress.percent=45;
+app.server.timers.shift()();await settle();assert.equal(app.el('workflow-progress').value,45);
+assert.match(app.el('history-status').textContent,/History unavailable/);assert.equal(app.server.timers.length,1);
+""")
+
+    def test_saved_inquiry_hides_unrelated_progress(self):
+        self.run_ui(r"""
+const started=new Date().toISOString(),app=browser({state:{job:{status:'running',progress:{started_at:started,percent:20,steps:[]}}}});await settle();
+app.server.runReplies.saved=packet('Saved inquiry',[beta]);await app.openRun('saved');assert.equal(app.el('workflow').hidden,true);
+await app.refresh();assert.equal(app.el('workflow').hidden,true);assert.equal(app.el('question').value,'Saved inquiry');
+app.server.state.job={status:'complete',result:{run_id:'background'},progress:{started_at:started,percent:100,steps:[]}};
+app.server.timers.shift()();await settle();assert.equal(app.el('workflow').hidden,true);
+assert.equal(app.el('question').value,'Saved inquiry');assert.match(app.el('status').textContent,/background inquiry is complete/);
+""")
+
+    def test_progress_waiting_and_failed_workers_still_lock_controls(self):
+        self.run_ui(r"""
+const stamp=new Date(Date.now()-30000).toISOString(),progress={started_at:stamp,updated_at:stamp,percent:60,steps:[{id:'answer',label:'Write answer',status:'running'}]};
+const app=browser({state:{job:{status:'running',progress}}});await settle();
+assert.match(app.el('workflow-wait').textContent,/No new progress reported/);assertQueryDisabled(app,true);
+progress.steps[0].status='failed';progress.finished_at=new Date().toISOString();await app.refresh();
+assert.equal(app.el('workflow-title').textContent,'Inquiry stopped');assert.equal(app.el('workflow').dataset.state,'failed');
+assert.match(app.el('workflow-wait').textContent,/in-flight requests/);assertQueryDisabled(app,true);
+""")
+
+    def test_conflicting_submission_follows_actual_running_job(self):
+        self.run_ui(r"""
+const app=browser();await settle();app.server.query=()=>{
+ app.server.state.job={status:'running',progress:{percent:40,steps:[{id:'answer',label:'Write answer',status:'running'}]}};
+ return {error:'One operation is already running',httpStatus:409};
+};
+await app.click('answer');await settle();assertQueryDisabled(app,true);
+assert.equal(app.el('workflow-title').textContent,'Building your inquiry');assert.equal(app.el('workflow-progress').value,40);
+assert.equal(app.server.timers.length,1);
+""")
+
+    def test_upload_steps_render_without_query_stage_assumptions(self):
+        self.run_ui(r"""
+const app=browser({state:{job:{status:'running',kind:'upload',progress:{percent:25,current_stage:'read',steps:[
+ {id:'prepare',label:'Prepare import',status:'complete'},
+ {id:'read',label:'Read source file',status:'running',completed:1,total:4},
+ {id:'import',label:'Import and embed',status:'pending'},
+ {id:'save',label:'Save index',status:'pending'},
+]}}}});await settle();
+assert.equal(app.el('workflow-title').textContent,'Importing sources');assert.equal(app.el('workflow-current').textContent,'Read source file');
+assert.equal(app.el('workflow-steps').children.length,4);assert.match(app.el('workflow-steps').children[1].textContent,/1 \/ 4 completed/);
+""")
+
+    def test_upload_locks_during_file_read_and_conflict_follows_job(self):
+        self.run_ui(r"""
+const app=browser();await settle();app.el('files').files=[{name:'example.jsonl',size:20}];
+app.server.fileGate=deferred();app.server.upload=()=>{
+ app.server.state.job={status:'running',kind:'upload',progress:{percent:40,steps:[{id:'import',label:'Import sources',status:'running'}]}};
+ return {error:'One operation is already running',httpStatus:409};
+};
+const pending=app.click('upload');assertQueryDisabled(app,true);assert.equal(app.el('upload').disabled,true);
+await app.click('answer');await app.click('upload');assert.equal(queries(app).length,0);
+app.server.fileGate.resolve();await pending;await settle();assertQueryDisabled(app,true);
+assert.equal(app.server.requests.filter(row=>row.path==='/api/upload').length,1);
+assert.equal(app.el('workflow-title').textContent,'Importing sources');assert.equal(app.el('workflow-progress').value,40);
+assert.equal(app.server.timers.length,1);
+""")
+
+    def test_unknown_submission_outcome_checks_state_before_unlocking(self):
+        self.run_ui(r"""
+const app=browser();await settle();app.server.query=()=>{
+ app.server.state.job={status:'running',progress:{percent:10,steps:[{id:'embed',label:'Embed question',status:'running'}]}};
+ throw Error('Response connection lost');
+};
+await app.click('answer');await settle();assertQueryDisabled(app,true);
+assert.equal(app.el('workflow-progress').value,10);assert.equal(app.server.timers.length,1);
+assert.equal(queries(app).length,1);
+""")
+
+    def test_hanging_state_request_times_out_then_recovers(self):
+        self.run_ui(r"""
+const app=browser({abort:true,state:{job:{status:'running',progress:{percent:20,steps:[]}}}});await settle();
+assert.equal(app.server.timers.length,1);app.server.hangState=true;
+app.server.timers.shift()();await settle();assert.equal(app.server.timers.length,1);
+app.server.timers.shift()();await settle();
+assert.match(app.el('status').textContent,/server took too long.*Retrying automatically/);
+assertQueryDisabled(app,true);assert.equal(app.el('workflow-progress').value,20);assert.equal(app.server.timers.length,1);
+app.server.hangState=false;app.server.state.job.progress.percent=40;app.server.timers.shift()();await settle();
+assert.equal(app.el('workflow-progress').value,40);assert.match(app.el('workflow-connection').textContent,/Connected/);
+assert.equal(app.server.timers.length,1);
 """)
 
 
@@ -249,6 +412,15 @@ class SourceMarkupTests(unittest.TestCase):
         for name in ('sources-all', 'sources-none'):
             self.assertEqual(parsed.elements[name][1]['type'], 'button')
         self.assertIn('hidden', parsed.elements['add-sources'][1])
+        self.assertEqual(parsed.elements['workflow-progress'][0], 'progress')
+        self.assertEqual(parsed.elements['workflow-progress'][1]['max'], '100')
+        self.assertEqual(parsed.elements['workflow'][1]['aria-labelledby'], 'workflow-title')
+        self.assertIn('hidden', parsed.elements['workflow'][1])
+        self.assertEqual(parsed.elements['workflow-announcement'][1]['aria-live'], 'polite')
+        self.assertEqual(parsed.elements['workflow-steps'][0], 'ol')
+        self.assertLess(html.index('id="composer"'), html.index('id="workflow"'))
+        self.assertLess(html.index('id="workflow"'), html.index('id="result"'))
+        self.assertIn('prefers-reduced-motion:reduce', (ROOT / 'mori/static/styles.css').read_text(encoding='utf-8'))
         self.assertEqual(parsed.forms, 0)
 
 

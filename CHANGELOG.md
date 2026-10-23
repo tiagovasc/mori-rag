@@ -1,5 +1,13 @@
 # Changelog
 
+## Live workflow progress — 2026-10-23
+
+The local chat now shows a live workflow bar and every query stage: preparation, question embedding, retrieval, passage scoring, summary scoring, optional reranking, evidence assembly, answering, citation checks and saving. Completed-item and cache counts reflect actual finished work, including out-of-order scoring responses. Optional stages are skipped explicitly. Progress measures stages rather than predicted duration; model calls remain visibly active with elapsed time. Imports show their extraction and indexing stages without invented per-unit counts.
+
+Progress snapshots are thread-safe and omit source text, questions and provider payloads. Failures retain the completed steps, cancel queued scoring calls and identify the failed stage; 100% appears only with successful completion. Temporary connection failures retry without unlocking an active query. Slow history refreshes cannot block progress; competing requests follow the running operation. Saved-inquiry browsing hides unrelated progress.
+
+Verification: all **116 public tests** pass, including 13 backend progress and 21 total frontend tests. An additional 19 private integration tests pass. A real-index HTTP check observed incremental counters, reused all cached ratings without provider calls and reproduced the prior evidence context exactly. The restarted local service serves the final assets; original indexes and saved answers remain unchanged. Independent code review passed. Accessibility and responsive styling were reviewed in code; no new visual browser check was performed.
+
 ## Collapsible Sources menu — 2026-10-23
 
 Source checkboxes now live in an initially collapsed **Sources** menu inside the question composer, directly above **Evidence settings**, with the same disclosure styling. A selected-source count remains visible while closed. Unavailable-source errors stay visible outside the menu and direct users to reopen Sources. Selection, saved inquiries and retrieval behavior are unchanged.
