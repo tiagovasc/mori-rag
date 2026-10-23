@@ -1,5 +1,13 @@
 # Changelog
 
+## Source selection in the chat — 2026-10-23
+
+The main question composer now offers source checkboxes, Select all / Select none, and selected unit/passage counts. Budgets and queries use the same server-validated selection across full units, summaries, passages and neighbors. Empty, unavailable and duplicate selections are rejected before provider initialization. Manual and URL selections survive polling; saved inquiries restore their recorded source scope without overwriting an explicit URL choice on initial load.
+
+The reference store supplies read-only source views. Collection adapters can expose named groups, disable uploads and retain inquiries from trusted historical store roots. `/open?collection=<id>` redirects within the same origin, avoiding form-policy failures from cross-port navigation. Historical runs remain readable.
+
+Verification: **92 public tests** pass, including ten backend selection and ten frontend interaction regressions. Actual browser checks reproduce the prior form failure and verify its repaired route, checkbox combinations, empty-selection guard, selected budgets, saved inquiries and citation navigation. Desktop and 390px layouts were inspected without horizontal overflow. A bounded combined-source live query returned only selected evidence with exact text, metadata and offsets. Private fixtures and runtime data remain excluded from the public repository. This is functional validation, not a retrieval-quality benchmark.
+
 ## Validation follow-up — 2026-10-23
 
 Valid JSONL source strings can contain literal Unicode next-line, line-separator and paragraph-separator characters. The importer now splits records only at ASCII newlines, preserving those characters inside source text, summaries and metadata. Synthetic coverage includes LF/CRLF records and a UTF-8 BOM.

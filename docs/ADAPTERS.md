@@ -28,6 +28,12 @@ Replace the storage/search contract when necessary. The reference `Store` suppli
 
 The current query implementation performs exact cosine search over `chunks()`. Supporting an ANN service efficiently requires replacing that retrieval step and fetching same-unit neighbors explicitly; returning millions of vectors through this method is not a scalable adapter. Preserve stable IDs, original source retrieval, explicit filters and deterministic tie handling. Declare approximate retrieval's recall tradeoff and test against an exact reference. No Supabase, pgvector, Qdrant or other remote connector is claimed to ship in this initial version.
 
+## Source selection in the research room
+
+The web interface also requires `source_catalog() -> [{id, label, units, chunks}]` and `select_sources(ids) -> selected_store`. The reference store groups by `source_id`; an adapter may group compatible existing indexes into named collections. A selected view must restrict `units()`, `chunks()` and `stats()` together, preserve original identities/fingerprints and reject empty, unknown or duplicate IDs before provider work. It may share caches, but must never broaden a selection when returning full sources, summaries or neighbors. Its `selection` catalog is saved as `sources` in the request and context packet.
+
+`create_server(store, config, port, allow_uploads=False)` binds the research interface with uploads disabled, without running its event loop; `serve()` remains the ordinary blocking entry point. Queries still write their own cache and run artifacts. An optional `run_roots()` returns trusted local store roots whose historical inquiries should appear alongside new runs. The first root wins duplicate run IDs. Only the adapter supplies these paths; clients cannot choose filesystem roots. Legacy `/open?collection=<id>` links resolve to a same-origin chat selection.
+
 ## Websites and Wikipedia
 
 `mori fetch` imports a single explicitly supplied public HTTPS URL, with redirect checks and a byte cap. HTML extraction removes script/style/navigation text but is not a site-specific article parser. Inspect the result; boilerplate and extraction errors can remain. Preserve source URLs, revision/date and actual license. Wikipedia revision exports or an API-derived JSONL adapter are preferable when reproducibility matters. The importer does not bypass access controls or crawl a domain.

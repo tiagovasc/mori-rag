@@ -26,6 +26,8 @@ Follow [AGENTS.md](AGENTS.md). Update the relevant public guide and behavioral t
 
 # Changelog
 
+23 October 2026 source-selection follow-up: the main composer has source checkboxes with all/none controls, selected-source budgets, server-enforced filtering and saved-selection restoration. Generic adapters can group compatible collections and keep their prior inquiries visible. Empty/unavailable sources fail closed. The same-origin selection route avoids cross-port form redirects. Current verification and limits are recorded in `CHANGELOG.md`; private operational setup and inventories remain ignored.
+
 23 October 2026 integration closeout: 72 automated tests pass, including ONNX truncation/fingerprint safeguards, Codex environment isolation, grouped citation handling and rejected-answer preservation. The updated package and authored live-provider fixture are verified. Earlier checkpoints below are historical; `CHANGELOG.md` owns compatibility and verification details.
 
 23 October 2026 validation: JSONL ingestion now preserves Unicode separators within source strings. All 61 tests pass, a fresh wheel builds and installs with packaged assets, and the authored fixture passes real local embeddings, Jev scoring and Codex answering. Detailed current scope and publication status remain in `CHANGELOG.md`.
@@ -45,3 +47,5 @@ The relevance scale is a ranking signal, not a probability of correctness. Full 
 Provider-specific authentication belongs in the user's environment. Public-safe examples do not depend on any private corpus or workspace path.
 
 Audit lessons: deduplicate retrieval text within its unit so identical words do not erase distinct source context; retain metadata in the actual model prompt, not only in the JSON packet. Validate all summary vectors and import identities before committing or making avoidable provider calls. A disabled stage must also disappear from preflight cost. Run test discovery from this repository root: a parent directory can resolve an unrelated installed `tests` package. Windows restricted loopback access can fail even while a test server is running; preserve the socket diagnostic and use the approved scoped test execution rather than changing the server's local-only bind.
+
+Navigation lesson: a successful HTTP redirect does not prove a form works in a browser. `form-action 'self'` can block a redirect to another port. Keep selection in the same origin and verify the actual click. Source filtering must happen before every retrieval branch, not only when rendering results; keep manual/URL selections stable across polling and restore saved selections explicitly.

@@ -75,6 +75,8 @@ python -m mori --config examples/mori.toml serve
 
 Open **http://127.0.0.1:8840**. Upload source units, adjust counts and context options, review the call budget, inspect source evidence, download a packet, or answer with your configured model. The interface is local-only; credentials stay on the server. The supplied Northbridge corpus is an explicitly fictional, redistributable teaching example.
 
+Choose sources with the checkboxes beside the question. Select any combination, or use Select all / Select none. Both the budget and the complete retrieval pipeline use that selection, including full units, summaries and neighboring passages. Empty or unavailable selections block submission. Saved inquiries retain their source selection; adapters can expose named collection groups through the same interface.
+
 The repository is installed from source; the package is not claimed to be published to PyPI. A network-free installation/test of the core is `python -m pip install -e .` followed by the test command below. `examples/demo.toml` uses explicitly labelled lexical hash vectors for fixtures, not semantic search.
 
 ## Choose your embeddings

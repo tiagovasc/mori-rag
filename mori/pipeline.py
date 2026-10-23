@@ -61,6 +61,9 @@ def query(store, question, config, embeddings=None, scorer=None, llm=None, answe
     run.mkdir(parents=True, exist_ok=False)
     request = {'id': run_id, 'question': question, 'created': now(), 'config': config.public(),
                'embedding_fingerprint': fingerprint, 'plan': estimate}
+    selection = getattr(store, 'selection', None)
+    if selection is not None:
+        request['sources'] = [{'id': row['id'], 'label': row['label']} for row in selection]
     atomic_json(run / 'request.json', request)
     try:
         units = {u['id']: u for u in store.units()}
@@ -120,6 +123,8 @@ def query(store, question, config, embeddings=None, scorer=None, llm=None, answe
             selected = selected[:config.final_passages]
         packet = {'schema': 'mori.context.v1', 'question': question, 'run_id': run_id, 'full_units': [], 'summaries': [], 'passages': [],
                   'notices': [], 'counts': {'retrieved': len(candidates), 'rated_passages': len(ranked), 'rated_summaries': len(summaries), 'jev_eligible': len(eligible_passages)}}
+        if selection is not None:
+            packet['sources'] = request['sources']
 
         def identity(unit):
             return {key: unit[key] for key in ('id', 'source_id', 'title', 'kind', 'locator', 'metadata', 'hash')}

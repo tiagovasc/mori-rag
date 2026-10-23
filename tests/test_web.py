@@ -45,7 +45,7 @@ const fetch = async path => {
 const context = vm.createContext({document, fetch, setTimeout});
 vm.runInContext(fs.readFileSync('mori/static/app.js', 'utf8'), context);
 for (const id of ['upload', 'retrieve', 'answer', 'plan']) assert.equal(elements.get(id).disabled, true, id);
-releaseState({stats: {units: 0, chunks: 0}, settings: {}, providers: {embedding: 'demo', llm: 'none'}, job: {status: 'idle'}});
+releaseState({stats: {units: 1, chunks: 1}, sources: [{id: 'fixture', label: 'Fixture', units: 1, chunks: 1}], allow_uploads: true, settings: {}, providers: {embedding: 'demo', llm: 'none'}, job: {status: 'idle'}});
 setImmediate(() => {
   for (const id of ['upload', 'retrieve', 'answer', 'plan']) assert.equal(elements.get(id).disabled, false, id);
   assert.equal(stateRequests, 1);

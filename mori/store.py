@@ -100,20 +100,47 @@ class Store:
                 for row in chunks[unit['id']]:
                     db.execute("INSERT INTO chunks VALUES(?,?,?,?,?,?,?)", (row['id'], unit['id'], row['seq'], row['start'], row['end'], row['text'], json.dumps(row['vector'])))
 
-    def units(self):
+    def source_catalog(self):
+        """Count source groups without loading original text or embedding vectors."""
         with self.connect() as db:
-            rows = [dict(r) for r in db.execute("SELECT * FROM units ORDER BY id")]
+            return [dict(row) for row in db.execute("""
+                SELECT u.source_id AS id,
+                  CASE WHEN count(DISTINCT u.title)=1 THEN min(u.title) ELSE u.source_id END AS label,
+                  count(*) AS units, coalesce(sum(c.n),0) AS chunks
+                FROM units AS u
+                LEFT JOIN (SELECT unit_id,count(*) AS n FROM chunks GROUP BY unit_id) AS c ON c.unit_id=u.id
+                GROUP BY u.source_id ORDER BY label,u.source_id
+            """)]
+
+    def select_sources(self, identifiers):
+        return _SourceSelection(self, _resolve_sources(self.source_catalog(), identifiers))
+
+    def run_roots(self):
+        return [self.root]
+
+    def _units(self, source_ids=None):
+        where, values = _source_filter(source_ids, 'units')
+        with self.connect() as db:
+            rows = [dict(r) for r in db.execute("SELECT * FROM units" + where + " ORDER BY id", values)]
         for row in rows:
             row['metadata'] = json.loads(row['metadata'])
             row['summary_vector'] = json.loads(row['summary_vector'])
         return rows
 
-    def chunks(self):
+    def units(self):
+        return self._units()
+
+    def _chunks(self, source_ids=None):
+        where, values = _source_filter(source_ids, 'u')
         with self.connect() as db:
-            rows = [dict(r) for r in db.execute("SELECT * FROM chunks ORDER BY unit_id,seq")]
+            rows = [dict(r) for r in db.execute(
+                "SELECT c.* FROM chunks AS c JOIN units AS u ON u.id=c.unit_id" + where + " ORDER BY c.unit_id,c.seq", values)]
         for row in rows:
             row['vector'] = json.loads(row['vector'])
         return rows
+
+    def chunks(self):
+        return self._chunks()
 
     def cache_get(self, key):
         with self.connect() as db:
@@ -125,8 +152,71 @@ class Store:
             db.execute("INSERT OR IGNORE INTO cache VALUES(?,?,?)", (key, json.dumps(value, allow_nan=False), now()))
 
     def stats(self):
+        return self._stats()
+
+    def _stats(self, source_ids=None):
+        where, values = _source_filter(source_ids, 'u')
         with self.connect() as db:
-            return {"units": db.execute("SELECT count(*) FROM units").fetchone()[0], "chunks": db.execute("SELECT count(*) FROM chunks").fetchone()[0], "embedding": self.fingerprint()}
+            return {"units": db.execute("SELECT count(*) FROM units AS u" + where, values).fetchone()[0],
+                    "chunks": db.execute("SELECT count(*) FROM chunks AS c JOIN units AS u ON u.id=c.unit_id" + where, values).fetchone()[0],
+                    "embedding": self.fingerprint()}
+
+
+def _source_filter(identifiers, alias):
+    if identifiers is None:
+        return '', ()
+    return f" WHERE {alias}.source_id IN ({','.join('?' for _ in identifiers)})", tuple(identifiers)
+
+
+def _resolve_sources(catalog, identifiers):
+    if (not isinstance(identifiers, list) or not identifiers
+            or any(not isinstance(value, str) or not value.strip() for value in identifiers)):
+        raise ValueError('Select at least one valid source ID')
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError('Duplicate source selection')
+    lookup = {row['id']: row for row in catalog}
+    if any(value not in lookup for value in identifiers):
+        raise ValueError('Unknown source selection')
+    return [dict(lookup[value]) for value in identifiers]
+
+
+class _SourceSelection:
+    """Read-only corpus view; successful provider ratings still share the cache."""
+    def __init__(self, store, selection):
+        self._store = store
+        self.root = store.root
+        self.selection = [dict(row) for row in selection]
+        self._source_ids = tuple(row['id'] for row in selection)
+
+    def units(self):
+        return self._store._units(self._source_ids)
+
+    def chunks(self):
+        return self._store._chunks(self._source_ids)
+
+    def stats(self):
+        return self._store._stats(self._source_ids)
+
+    def source_catalog(self):
+        return [row for row in self._store.source_catalog() if row['id'] in self._source_ids]
+
+    def select_sources(self, identifiers):
+        return _SourceSelection(self._store, _resolve_sources(self.source_catalog(), identifiers))
+
+    def fingerprint(self):
+        return self._store.fingerprint()
+
+    def cache_get(self, key):
+        return self._store.cache_get(key)
+
+    def cache_put(self, key, value):
+        return self._store.cache_put(key, value)
+
+    def run_roots(self):
+        return self._store.run_roots()
+
+    def add(self, *_args, **_kwargs):
+        raise ValueError('Selected source views are read-only')
 
 
 def validate_unit(row, limit):
