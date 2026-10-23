@@ -26,6 +26,8 @@ Follow [AGENTS.md](AGENTS.md). Update the relevant public guide and behavioral t
 
 # Changelog
 
+23 October 2026 menu refinement: source checkboxes are inside the collapsed **Sources** disclosure immediately above **Evidence settings**, with selection counts visible when closed. The public README documents usage; `CHANGELOG.md` records verification.
+
 23 October 2026 source-selection follow-up: the main composer has source checkboxes with all/none controls, selected-source budgets, server-enforced filtering and saved-selection restoration. Generic adapters can group compatible collections and keep their prior inquiries visible. Empty/unavailable sources fail closed. The same-origin selection route avoids cross-port form redirects. Current verification and limits are recorded in `CHANGELOG.md`; private operational setup and inventories remain ignored.
 
 23 October 2026 integration closeout: 72 automated tests pass, including ONNX truncation/fingerprint safeguards, Codex environment isolation, grouped citation handling and rejected-answer preservation. The updated package and authored live-provider fixture are verified. Earlier checkpoints below are historical; `CHANGELOG.md` owns compatibility and verification details.

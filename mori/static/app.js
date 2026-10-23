@@ -11,7 +11,7 @@ async function api(path,data){const r=await fetch(path,data?{method:'POST',heade
 function settings(){const result={};for(const key of Object.keys(labels))result[key]=Number($(key).value);result.rerank_enabled=$('rerank_enabled').checked;result.exclude_full_unit_passages=$('exclude_full_unit_passages').checked;return result;}
 function selectedAvailableSources(){return sources.filter(source=>selectedSources.has(source.id));}
 function unavailableSources(){const available=new Set(sources.map(source=>source.id));return [...selectedSources].filter(id=>!available.has(id));}
-function selectionError(){const missing=unavailableSources();return missing.length?`Unavailable sources: ${missing.map(id=>id||'(empty source ID)').join(', ')}. Choose available sources below or select all to continue.`:'';}
+function selectionError(){const missing=unavailableSources();return missing.length?`Unavailable sources: ${missing.map(id=>id||'(empty source ID)').join(', ')}. Open Sources and choose available sources or select all to continue.`:'';}
 function updateControls(){
  const locked=busy||serverBusy||loadingRun||!sourcesReady,selected=selectedAvailableSources(),error=selectionError();
  $('composer').setAttribute('aria-busy',String(busy||serverBusy||loadingRun));
@@ -21,6 +21,7 @@ function updateControls(){
  $('sources-all').disabled=locked||!sources.length||(!error&&selected.length===sources.length);
  $('sources-none').disabled=locked||!selectedSources.size;
  $('source-error').textContent=error;$('source-error').hidden=!error;
+ $('source-count').textContent=!sourcesReady?'Loading…':!sources.length?'No sources available':!selected.length?'None selected':selected.length===sources.length?`All ${sources.length} selected`:`${selected.length} of ${sources.length} selected`;
  $('source-summary').textContent=!sourcesReady?'Loading sources…':!sources.length?(allowUploads?'No sources available. Import a source to begin.':'No sources are available in this corpus.'):`${selected.length} of ${sources.length} sources selected · ${selected.reduce((sum,source)=>sum+source.units,0)} source units · ${selected.reduce((sum,source)=>sum+source.chunks,0)} passages${selected.length?'':'. Choose at least one source.'}`;
 }
 function working(value){busy=value;updateControls();}

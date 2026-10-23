@@ -1,5 +1,11 @@
 # Changelog
 
+## Collapsible Sources menu — 2026-10-23
+
+Source checkboxes now live in an initially collapsed **Sources** menu inside the question composer, directly above **Evidence settings**, with the same disclosure styling. A selected-source count remains visible while closed. Unavailable-source errors stay visible outside the menu and direct users to reopen Sources. Selection, saved inquiries and retrieval behavior are unchanged.
+
+Verification: all 92 public tests pass, including updated frontend count and disclosure checks. Live HTTP checks confirm the menu and current assets are served with the five configured sources. Independent code review passed. No new visual browser check was performed for this layout-only follow-up.
+
 ## Source selection in the chat — 2026-10-23
 
 The main question composer now offers source checkboxes, Select all / Select none, and selected unit/passage counts. Budgets and queries use the same server-validated selection across full units, summaries, passages and neighbors. Empty, unavailable and duplicate selections are rejected before provider initialization. Manual and URL selections survive polling; saved inquiries restore their recorded source scope without overwriting an explicit URL choice on initial load.

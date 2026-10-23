@@ -94,6 +94,7 @@ assert.equal(app.el('source-picker').disabled,true);
 gate.resolve();await settle();
 assert.deepEqual(app.selected(),['alpha','beta']);assertQueryDisabled(app,false);
 assert.equal(app.el('source-summary').textContent,'2 of 2 sources selected · 4 source units · 10 passages');
+assert.equal(app.el('source-count').textContent,'All 2 selected');
 assert.equal(app.el('sources-all').disabled,true);assert.equal(app.el('add-sources').hidden,false);
 assert.equal(app.server.requests.filter(r=>r.path==='/api/state').length,1);
 """)
@@ -103,9 +104,11 @@ assert.equal(app.server.requests.filter(r=>r.path==='/api/state').length,1);
 const app=browser();await settle();
 await app.click('sources-none');assertQueryDisabled(app,true);
 assert.match(app.el('source-summary').textContent,/0 of 2 sources selected/);
+assert.equal(app.el('source-count').textContent,'None selected');
 await app.click('answer');await app.click('plan');assert.equal(queries(app).length,0);
 assert.throws(()=>app.eval('querySources()'),/Choose at least one source/);
 await app.choose('beta',true);assertQueryDisabled(app,false);
+assert.equal(app.el('source-count').textContent,'1 of 2 selected');
 await app.click('plan');assert.deepEqual(queries(app)[0].body.sources,['beta']);
 app.el('question').value='Synthetic question';await app.click('answer');await settle();
 assert.deepEqual(queries(app)[1].body.sources,['beta']);assert.equal(queries(app)[1].body.answer,true);
@@ -230,7 +233,15 @@ class SourceMarkupTests(unittest.TestCase):
         html = (ROOT / 'mori/static/index.html').read_text(encoding='utf-8')
         parsed = Parser()
         parsed.feed(html)
+        self.assertEqual(parsed.elements['sources'][0], 'details')
+        self.assertNotIn('open', parsed.elements['sources'][1])
+        source_menu = html.split('<details id="sources">', 1)[1].split('</details>', 1)[0]
+        self.assertIn('<summary>Sources ', source_menu)
+        self.assertIn('id="source-count"', source_menu)
+        self.assertIn('id="source-picker"', source_menu)
+        self.assertNotIn('id="source-error"', source_menu)
         self.assertEqual(parsed.elements['source-picker'][0], 'fieldset')
+        self.assertEqual(parsed.elements['source-picker'][1]['aria-label'], 'Search sources')
         self.assertEqual(parsed.elements['source-error'][1]['role'], 'alert')
         self.assertIn('source-summary', parsed.elements['source-picker'][1]['aria-describedby'])
         self.assertLess(html.index('id="composer"'), html.index('id="source-picker"'))
