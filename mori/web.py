@@ -118,6 +118,8 @@ def serve(store, config, port=8840):
                             raise ValueError('Unsupported upload type')
                         if body.get('split', 'whole') not in ('whole', 'headings'):
                             raise ValueError('Invalid unit split policy')
+                        if type(body.get('summarize', False)) is not bool:
+                            raise ValueError('summarize must be a boolean')
                         data = base64.b64decode(body['data'], validate=True)
                         if len(data) > 8 * 1024 * 1024:
                             raise ValueError('Upload exceeds 8 MB')
@@ -132,7 +134,7 @@ def serve(store, config, port=8840):
                                         unit['title'] = Path(name).stem
                                     unit['locator'] = f'{Path(name).name} / unit {index}'
                                     unit['metadata']['filename'] = Path(name).name
-                            return ingest(store, units, active, embeddings, LLM(active), bool(body.get('summarize', False)))
+                            return ingest(store, units, active, embeddings, LLM(active), body.get('summarize', False))
                         action = import_upload
                     except Exception:
                         lock.release()

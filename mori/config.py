@@ -65,6 +65,9 @@ class Config:
     ])
 
     def validate(self):
+        for name, field_info in self.__dataclass_fields__.items():
+            if field_info.type is str and not isinstance(getattr(self, name), str):
+                raise ValueError(f"{name} must be a string")
         for name in ("retrieval_k", "jev_k", "final_passages", "rerank_k", "chunk_words",
                      "context_max_chars", "llm_max_input_chars", "unit_max_chars", "request_max_bytes",
                      "max_rating_calls", "workers", "timeout", "embedding_batch", "llm_max_output_tokens"):
@@ -80,8 +83,9 @@ class Config:
         for name in ("rerank_enabled", "exclude_full_unit_passages"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a boolean")
-        if self.jev_k > self.retrieval_k or self.final_passages > self.jev_k or self.rerank_k > self.jev_k:
-            raise ValueError("Passage counts must follow retrieval_k >= jev_k >= final_passages/rerank_k")
+        active_passage_cap = self.rerank_k if self.rerank_enabled else self.final_passages
+        if self.jev_k > self.retrieval_k or active_passage_cap > self.jev_k:
+            raise ValueError("Passage counts must follow retrieval_k >= jev_k >= the active final passage cap")
         if self.chunk_overlap >= self.chunk_words:
             raise ValueError("chunk_overlap must be smaller than chunk_words")
         if not isinstance(self.rubric, list) or not 2 <= len(self.rubric) <= 10 or any(not isinstance(x, str) or not x.strip() for x in self.rubric):

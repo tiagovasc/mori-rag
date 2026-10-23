@@ -13,6 +13,13 @@ import urllib.request
 from .store import digest, vector
 
 
+class NoProviderRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        # Provider endpoints are explicit destinations. Never forward credentials
+        # or source material to a destination chosen by a response.
+        return None
+
+
 def http_json(url, payload, key, timeout, retries=0, max_bytes=120000):
     data = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode()
     if len(data) > max_bytes:
@@ -20,10 +27,11 @@ def http_json(url, payload, key, timeout, retries=0, max_bytes=120000):
     headers = {"Content-Type": "application/json", "User-Agent": "mori-rag/0.1"}
     if key:
         headers['Authorization'] = 'Bearer ' + key
+    opener = urllib.request.build_opener(NoProviderRedirect)
     for attempt in range(retries + 1):
         try:
             request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with opener.open(request, timeout=timeout) as response:
                 body = response.read(16 * 1024 * 1024 + 1)
                 if len(body) > 16 * 1024 * 1024:
                     raise ValueError("Provider response too large")
@@ -44,15 +52,20 @@ class Embeddings:
 
     @property
     def fingerprint(self):
-        return {"provider": self.c.embedding, "model": self.c.embedding_model,
+        result = {"provider": self.c.embedding, "model": self.c.embedding_model,
                 "revision": self.c.embedding_revision, "query_prefix": self.c.query_prefix,
                 "document_prefix": self.c.document_prefix, "normalization": "l2",
                 "endpoint": self.c.embedding_url if self.c.embedding == 'http' else '',
                 "onnx_model_file": self.c.onnx_model_file if self.c.embedding == 'onnx' else '',
                 "pooling": self.c.onnx_pooling if self.c.embedding == 'onnx' else '',
                 "token_limit": self.c.embedding_token_limit,
-                **({"requested_dimensions": self.c.embedding_dimensions} if self.c.embedding_dimensions else {}),
+                "requested_dimensions": self.c.embedding_dimensions,
                 "chunk_words": self.c.chunk_words, "chunk_overlap": self.c.chunk_overlap}
+        if self.c.embedding == 'onnx':
+            # Older ONNX indexes may have inherited silent tokenizer truncation.
+            # Require explicit re-embedding rather than mixing changed vectors.
+            result['onnx_tokenization'] = 'untruncated-v1'
+        return result
 
     def encode(self, texts, query=False):
         prepared = [(self.c.query_prefix if query else self.c.document_prefix) + text for text in texts]
@@ -75,6 +88,7 @@ class Embeddings:
             if self.model is None:
                 directory = Path(self.c.embedding_model)
                 tokenizer = Tokenizer.from_file(str(directory / 'tokenizer.json'))
+                tokenizer.no_truncation()
                 tokenizer.enable_padding()
                 options = ort.SessionOptions()
                 options.intra_op_num_threads = 2
@@ -119,6 +133,8 @@ class Embeddings:
         response = http_json(self.c.embedding_url, payload,
                              os.environ.get(self.c.embedding_key_env, ''), self.c.timeout, self.c.retries,
                              max_bytes=max(self.c.request_max_bytes, 1000000))
+        if 'model' in response and response['model'] != self.c.embedding_model:
+            raise ValueError("Embedding provider returned a different model than requested; configure its exact model identity explicitly")
         rows = sorted(response['data'], key=lambda x: x['index'])
         if [r['index'] for r in rows] != list(range(len(prepared))):
             raise ValueError("Embedding response has missing/duplicate indices")

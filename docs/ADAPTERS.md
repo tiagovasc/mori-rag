@@ -32,6 +32,8 @@ The current query implementation performs exact cosine search over `chunks()`. S
 
 `mori fetch` imports a single explicitly supplied public HTTPS URL, with redirect checks and a byte cap. HTML extraction removes script/style/navigation text but is not a site-specific article parser. Inspect the result; boilerplate and extraction errors can remain. Preserve source URLs, revision/date and actual license. Wikipedia revision exports or an API-derived JSONL adapter are preferable when reproducibility matters. The importer does not bypass access controls or crawl a domain.
 
+Each source connection uses the public numeric address validated for that request, with normal TLS certificate/hostname verification against the URL host. Redirects are resolved and checked again before connecting. This prevents a second DNS lookup from redirecting the connection to a private address. Source fetching connects directly and does not use environment HTTP proxies.
+
 ## YouTube and podcasts
 
 Obtain an authorized transcript or subtitle file through the source's normal export, a user-provided transcript, or a collection-specific connector. Import VTT/SRT/TXT and keep episode/video URLs and timestamps in unit metadata. A podcast page or audio download is not itself a transcript. Transcription, platform authentication, paywall handling and media downloading are deliberately separate from this retrieval engine. An agent can add a connector under this contract without changing ranking or answer assembly.

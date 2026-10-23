@@ -1,16 +1,21 @@
 import dataclasses
+import io
 import json
 import math
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+import urllib.request
+import urllib.response
+import zipfile
+from email.message import Message
+from unittest.mock import Mock, patch
 
 from mori.config import Config, load
 from mori.ingest import chunks, extract, ingest, load_file
 from mori.pipeline import answer_prompt, plan, query, validate_answer
-from mori.providers import Embeddings, Jev, LLM
-from mori.store import Store, digest, validate_unit
+from mori.providers import Embeddings, Jev, LLM, http_json
+from mori.store import Store, digest, validate_unit, vector
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -179,6 +184,20 @@ class MoriTests(unittest.TestCase):
         for row in chunks(text, 3, 1):
             self.assertEqual(row['text'], text[row['start']:row['end']])
 
+    def test_jsonl_preserves_literal_unicode_line_separators(self):
+        text = 'Original\u0085next line\u2028line separator\u2029paragraph separator\nordinary newline\rreturn.'
+        rows = [{**self.units[0], 'id': 'unicode-source', 'text': text,
+                 'summary': 'Summary\u2028with a literal separator.', 'metadata': {'note': '\u0085\u2029'}},
+                {**self.units[1], 'id': 'second-source'}]
+        for index, newline in enumerate(('\n', '\r\n')):
+            with self.subTest(record_separator=repr(newline)):
+                path = Path(self.temp.name) / f'unicode-{index}.jsonl'
+                payload = newline.join(json.dumps(row, ensure_ascii=False) for row in rows)
+                payload = ('\ufeff' if index else '') + payload + newline
+                path.write_bytes(payload.encode('utf-8'))
+                self.assertEqual(load_file(path), rows)
+                self.assertEqual(path.read_bytes(), payload.encode('utf-8'))
+
     def test_all_config_examples_validate(self):
         for path in (ROOT / 'examples').glob('*.toml'):
             load(path)
@@ -225,6 +244,125 @@ class MoriTests(unittest.TestCase):
         with patch.dict('os.environ', {'OPENAI_API_KEY': 'test'}), patch('mori.providers.http_json', return_value={'data': [{'index': 0, 'embedding': [1., 0.]}]}):
             with self.assertRaisesRegex(ValueError, 'dimension count'):
                 Embeddings(config).encode(['text'])
+
+    def test_http_embeddings_reject_advertised_model_substitution(self):
+        config = dataclasses.replace(self.config, embedding='http', embedding_model='explicit-model')
+        response = {'model': 'another-model', 'data': [{'index': 0, 'embedding': [1.0, 0.0]}]}
+        with patch('mori.providers.http_json', return_value=response):
+            with self.assertRaisesRegex(ValueError, 'different model'):
+                Embeddings(config).encode(['text'])
+        response['model'] = config.embedding_model
+        with patch('mori.providers.http_json', return_value=response):
+            self.assertEqual(Embeddings(config).encode(['text']), [[1.0, 0.0]])
+
+    def test_provider_redirects_never_forward_secrets_or_source_data(self):
+        # Exercise urllib's real redirect handling with an in-memory transport.
+        # No listener, provider connection or real credential is involved.
+        original_builder = urllib.request.build_opener
+        for code in (301, 302, 303, 307, 308):
+            requests = []
+            class RedirectingTransport(urllib.request.HTTPHandler):
+                def http_open(self, request):
+                    requests.append(request)
+                    headers = Message()
+                    headers['Location'] = 'http://unintended.invalid/leak'
+                    response = urllib.response.addinfourl(io.BytesIO(b'withheld'), headers, request.full_url, code)
+                    response.msg = 'Redirect'
+                    return response
+            with self.subTest(status=code), patch('mori.providers.urllib.request.build_opener',
+                    side_effect=lambda *handlers: original_builder(*handlers, RedirectingTransport())):
+                with self.assertRaisesRegex(RuntimeError, f'HTTP {code}'):
+                    http_json('http://provider.invalid/v1', {'source': 'private fixture'}, 'test-only-key', 1)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0].full_url, 'http://provider.invalid/v1')
+
+    def test_vector_normalization_handles_extreme_finite_values(self):
+        for values in ([1e308, 1e308], [1e-308, -1e-308]):
+            with self.subTest(values=values):
+                normalized = vector(values)
+                self.assertTrue(all(math.isfinite(value) for value in normalized))
+                self.assertAlmostEqual(math.hypot(*normalized), 1.0)
+                self.assertNotEqual(normalized, [0.0, 0.0])
+        with self.assertRaisesRegex(ValueError, 'Invalid embedding'):
+            vector([10 ** 1000])
+
+    def test_summary_segment_dimensions_fail_atomically(self):
+        config = dataclasses.replace(self.config, chunk_words=2, chunk_overlap=0)
+        embeddings = Mock(fingerprint={'model': 'dimension-fixture'})
+        embeddings.encode.side_effect = lambda texts: [[1.0, 0.0] if i == 0 else [0.0, 0.0, 1.0] for i in range(len(texts))]
+        store = Store(Path(self.temp.name) / 'dimensions')
+        with self.assertRaisesRegex(ValueError, 'summary segment dimensions'):
+            ingest(store, [{'id': 'new', 'source_id': 'work', 'title': 'Title',
+                            'text': 'one two', 'summary': 'one two three four'}], config, embeddings)
+        self.assertEqual(store.stats()['units'], 0)
+        self.assertIsNone(store.fingerprint())
+
+    def test_long_summaries_obey_embedding_batch_size(self):
+        config = dataclasses.replace(self.config, chunk_words=2, chunk_overlap=0, embedding_batch=2)
+        embeddings = Mock(fingerprint={'model': 'batch-fixture'})
+        embeddings.encode.side_effect = lambda texts: [[1.0, 0.0] for _ in texts]
+        store = Store(Path(self.temp.name) / 'batches')
+        ingest(store, [{'id': 'new', 'source_id': 'work', 'title': 'Title',
+                        'text': 'one two', 'summary': 'one two three four five six seven eight nine ten'}], config, embeddings)
+        self.assertEqual([len(call.args[0]) for call in embeddings.encode.call_args_list], [1, 2, 2, 1])
+
+    def test_generated_summary_reimport_reuses_record_without_model_calls(self):
+        unit = {**self.units[0], 'id': 'generated-summary', 'summary': ''}
+        writer = Mock()
+        writer.complete.return_value = 'Faithful test fixture summary of the complete unit.'
+        ingest(self.store, [unit], self.config, self.embeddings, llm=writer, summarize=True)
+        original = next(u for u in self.store.units() if u['id'] == unit['id'])
+        with patch.object(self.embeddings, 'encode', side_effect=AssertionError('Unexpected embedding call')):
+            result = ingest(self.store, [unit], self.config, self.embeddings, summarize=True)
+        self.assertEqual(result['unchanged_units'], 1)
+        self.assertEqual(writer.complete.call_count, 1)
+        self.assertEqual(next(u for u in self.store.units() if u['id'] == unit['id']), original)
+        with self.assertRaisesRegex(ValueError, 'Changed unit ID'):
+            ingest(self.store, [{**unit, 'text': 'A changed original'}], self.config, self.embeddings, llm=writer, summarize=True)
+        self.assertEqual(writer.complete.call_count, 1)
+
+    def test_invalid_later_unit_stops_before_summary_generation(self):
+        writer = Mock()
+        missing_summary = {**self.units[0], 'id': 'needs-summary', 'summary': ''}
+        invalid = {**self.units[1], 'id': 'invalid id'}
+        with self.assertRaises(ValueError):
+            ingest(self.store, [missing_summary, invalid], self.config, self.embeddings, llm=writer, summarize=True)
+        writer.complete.assert_not_called()
+
+    def test_invalid_metadata_stops_before_any_provider_calls(self):
+        writer = Mock()
+        for metadata in ({'score': float('nan')}, {'nested': {'score': float('inf')}},
+                         {1: 'numeric key'}, {'nested': {1: 'numeric key'}}, {'tuple': (1, 2)}):
+            unit = {**self.units[0], 'id': 'bad-metadata', 'summary': '', 'metadata': metadata}
+            with self.subTest(metadata=metadata), patch.object(self.embeddings, 'encode', side_effect=AssertionError('Unexpected embedding call')):
+                with self.assertRaisesRegex(ValueError, 'finite JSON'):
+                    ingest(self.store, [unit], self.config, self.embeddings, llm=writer, summarize=True)
+        writer.complete.assert_not_called()
+
+    def test_legacy_fingerprint_accepts_new_units_without_reembedding(self):
+        fingerprint = self.store.fingerprint()
+        fingerprint.pop('requested_dimensions')
+        with self.store.connect() as db:
+            db.execute("UPDATE meta SET value=? WHERE key='embedding'", (json.dumps(fingerprint),))
+        result = ingest(self.store, [{**self.units[0], 'id': 'new-legacy-unit'}], self.config, self.embeddings)
+        self.assertEqual(result['added_units'], 1)
+        self.assertEqual(self.store.fingerprint(), fingerprint)
+
+    def test_explicit_embedding_dimensions_reset_fails_before_provider(self):
+        fingerprint = self.store.fingerprint()
+        fingerprint['requested_dimensions'] = 256
+        with self.store.connect() as db:
+            db.execute("UPDATE meta SET value=? WHERE key='embedding'", (json.dumps(fingerprint),))
+        with patch.object(self.embeddings, 'encode', side_effect=AssertionError('Unexpected embedding call')):
+            with self.assertRaisesRegex(ValueError, 'fingerprint'):
+                ingest(self.store, [{**self.units[0], 'id': 'new-dimension-unit'}], self.config, self.embeddings)
+
+    def test_docx_preserves_visible_spacing_and_omits_deleted_and_field_text(self):
+        xml = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>first</w:t><w:tab/><w:t>second</w:t><w:br/><w:t>third</w:t></w:r></w:p><w:p><w:del><w:r><w:delText>deleted</w:delText></w:r></w:del><w:r><w:instrText> HYPERLINK hidden </w:instrText><w:t>visible</w:t></w:r></w:p></w:body></w:document>'
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('word/document.xml', xml)
+        self.assertEqual(extract(data.getvalue(), '.docx'), 'first\tsecond\nthird\nvisible')
 
     def test_embedding_preset_initializer_preserves_existing_configs(self):
         from mori.cli import main

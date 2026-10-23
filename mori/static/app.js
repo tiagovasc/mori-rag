@@ -33,4 +33,5 @@ $('plan').addEventListener('click',async()=>{try{const p=await api('/api/plan',{
 function fileData(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(file);});}
 $('upload').addEventListener('click',async()=>{try{const files=Array.from($('files').files);if(files.length!==1)throw Error('Import one file at a time. A JSONL file can contain many units.');if(files[0].size>8*1024*1024)throw Error('Upload exceeds 8 MB. Split into meaningful units.');working(true);await api('/api/upload',{filename:files[0].name,data:await fileData(files[0]),split:$('split').value,summarize:$('summarize').checked});watch();}catch(e){working(false);status(e.message);}});
 $('download').addEventListener('click',()=>{if(!current)return;const url=URL.createObjectURL(new Blob([JSON.stringify(current.context,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='mori-'+current.context.run_id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-refresh().then(()=>watch()).catch(e=>status(e.message));
+working(true);
+watch();

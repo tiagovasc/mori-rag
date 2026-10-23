@@ -28,12 +28,21 @@ def atomic_json(path, value):
 
 
 def vector(values):
-    if not isinstance(values, (list, tuple)) or not values or any(type(x) not in (float, int) or not math.isfinite(x) for x in values):
+    if not isinstance(values, (list, tuple)) or not values or any(type(x) not in (float, int) for x in values):
         raise ValueError("Invalid embedding values")
-    norm = math.sqrt(sum(x * x for x in values))
-    if not norm:
+    try:
+        values = [float(x) for x in values]
+    except (OverflowError, ValueError):
+        raise ValueError("Invalid embedding values") from None
+    if any(not math.isfinite(x) for x in values):
+        raise ValueError("Invalid embedding values")
+    scale = max(abs(x) for x in values)
+    if not scale:
         raise ValueError("Zero embedding")
-    return [float(x / norm) for x in values]
+    # Scale first: squaring finite values can overflow or underflow to zero.
+    scaled = [x / scale for x in values]
+    norm = math.hypot(*scaled)
+    return [x / norm for x in scaled]
 
 
 class Store:
@@ -75,7 +84,8 @@ class Store:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             old = db.execute("SELECT value FROM meta WHERE key='embedding'").fetchone()
-            if old and json.loads(old[0]) != fingerprint:
+            previous = json.loads(old[0]) if old else None
+            if previous and {**previous, 'requested_dimensions': previous.get('requested_dimensions', 0)} != {**fingerprint, 'requested_dimensions': fingerprint.get('requested_dimensions', 0)}:
                 raise ValueError("Embedding fingerprint mismatch; create a separate corpus and re-embed explicitly")
             db.execute("INSERT OR IGNORE INTO meta VALUES('embedding',?)", (encoded,))
             for unit in units:
@@ -131,5 +141,13 @@ def validate_unit(row, limit):
     result.update(kind=row.get('kind', 'document'), locator=row.get('locator', ''), metadata=row.get('metadata', {}))
     if not isinstance(result['metadata'], dict) or not all(isinstance(result[k], str) for k in ('kind', 'locator')):
         raise ValueError("Invalid unit metadata")
+    try:
+        # Metadata must survive storage without coercing keys/types or retaining
+        # nonstandard NaN/Infinity values that cannot be rendered in run artifacts.
+        encoded_metadata = json.dumps(result['metadata'], ensure_ascii=False, sort_keys=True, allow_nan=False)
+        if json.loads(encoded_metadata) != result['metadata']:
+            raise ValueError("Metadata changes when serialized")
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError("Unit metadata must contain finite JSON values and string object keys") from None
     result['hash'] = digest(result)
     return result

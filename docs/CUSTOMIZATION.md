@@ -27,7 +27,9 @@ Every `Config` dataclass field in `mori/config.py` is accepted as a top-level TO
 | `retries` | 2 | Additional HTTP retries after the first attempt |
 | `request_max_bytes` | 120000 | Jev request body guard, measured in UTF-8 bytes |
 
-Counts satisfy `retrieval_k >= jev_k >= final_passages` and `jev_k >= rerank_k`. The reference implementation caps semantic candidates at 10,000, workers at 64 and neighbor radius at 10. These are implementation guards, not provider promises. Zero full units/summaries are allowed for explicit ablation, but the normal design uses both branches.
+Counts satisfy `retrieval_k >= jev_k >=` the active passage cap: `final_passages` when reranking is off, or `rerank_k` when it is on. An inactive cap does not constrain the current pipeline; enabling that stage validates its cap. The reference implementation caps semantic candidates at 10,000, workers at 64 and neighbor radius at 10. These are implementation guards, not provider promises. Zero full units/summaries are allowed for explicit ablation, but the normal design uses both branches.
+
+Setting both `full_units = 0` and `summaries = 0` disables summary ranking and removes summary decisions from the query budget. Either positive setting still needs summary ranking. Requests that require answering or reranking fail before retrieval/provider calls when no LLM is configured.
 
 ## Qualitative anchors and numeric caps
 

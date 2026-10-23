@@ -26,6 +26,12 @@ Follow [AGENTS.md](AGENTS.md). Update the relevant public guide and behavioral t
 
 # Changelog
 
+23 October 2026 integration closeout: 72 automated tests pass, including ONNX truncation/fingerprint safeguards, Codex environment isolation, grouped citation handling and rejected-answer preservation. The updated package and authored live-provider fixture are verified. Earlier checkpoints below are historical; `CHANGELOG.md` owns compatibility and verification details.
+
+23 October 2026 validation: JSONL ingestion now preserves Unicode separators within source strings. All 61 tests pass, a fresh wheel builds and installs with packaged assets, and the authored fixture passes real local embeddings, Jev scoring and Codex answering. Detailed current scope and publication status remain in `CHANGELOG.md`.
+
+22 October 2026 follow-up audit: fixes and regression coverage for optional-stage budgets, source attribution and metadata, embedding/summary integrity, DOCX extraction, provider redirects, public-source DNS pinning, strict upload switches and initial UI polling. Detailed behavior and verification are recorded in `CHANGELOG.md`; prior release verification below is historical. Regression modules under the existing `tests/` group include `test_pipeline_regressions.py` and `test_fetch_security.py`. Private continuation and reversible diff records remain under `.local/`.
+
 22 October 2026 completion: public source is https://github.com/tiagovasc/mori-rag. Thirty tests and cross-platform CI pass; real MiniLM/Jev/Codex smoke verification and desktop/mobile/upload/source-link checks passed. MiniLM/OpenAI embedding selection is implemented; OpenAI contract is mock-tested. Public-safe fixtures only; private release receipts remain under `.local/`. Public README and CHANGELOG own the supported behavior and limitations.
 
 22 October 2026: Created as a separate project combining reusable ideas from prior retrieval, summary-ranking and full-source systems. Existing projects remain unchanged.
@@ -37,3 +43,5 @@ The relevance scale is a ranking signal, not a probability of correctness. Full 
 # MISC
 
 Provider-specific authentication belongs in the user's environment. Public-safe examples do not depend on any private corpus or workspace path.
+
+Audit lessons: deduplicate retrieval text within its unit so identical words do not erase distinct source context; retain metadata in the actual model prompt, not only in the JSON packet. Validate all summary vectors and import identities before committing or making avoidable provider calls. A disabled stage must also disappear from preflight cost. Run test discovery from this repository root: a parent directory can resolve an unrelated installed `tests` package. Windows restricted loopback access can fail even while a test server is running; preserve the socket diagnostic and use the approved scoped test execution rather than changing the server's local-only bind.

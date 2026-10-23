@@ -37,6 +37,8 @@ A passage can answer a narrow question while hiding the qualifications around it
 
 Passages from units already included in full are excluded by default. Summary selections are distinct and exclude the full units. If the collection is small or too little evidence meets the relevance threshold, the packet reports the shortfall. It never pads results with duplicates or invents sources.
 
+Identical passages from different units keep their separate attribution and context. Source metadata, including authorship and extraction caveats, accompanies the evidence in both the saved packet and the model handoff.
+
 The goal is better contextual evidence, not an unsupported claim to be the best system on every benchmark. Quality depends on unit boundaries, summaries, retrieval coverage, the rubric and the answer model. See [evaluation](docs/EVALUATION.md) for what is and is not tested.
 
 ## Quick start
@@ -166,6 +168,8 @@ Want **one complete chapter, five summaries and twenty passages without another 
 
 By default, all summaries are scored directly. For a larger corpus, set `summary_candidates` to preselect a smaller summary pool semantically before Jev, and evaluate the recall tradeoff. A preflight call budget prevents unexpectedly rating an entire large collection.
 
+For an explicit passage-only query, set both `full_units = 0` and `summaries = 0`; summary rating and its call budget are then skipped. Only the active final-passage cap constrains the shortlist. Answering or reranking without a configured LLM fails before any retrieval or relevance calls.
+
 ## Answer providers
 
 You can use a compatible chat-completion endpoint, a trusted local command, or the portable `answer_prompt.txt` handoff with any LLM. No answer provider is silently selected. Summary generation, optional reranking and answering use the same configured LLM adapter; advanced integrations can inject separate adapters for each task.
@@ -198,6 +202,8 @@ status.json              Completion or explicit failure
 ```
 
 Successful Jev decisions are cached by exact question, evidence, rubric, endpoint and model request. Interrupted queries reuse completed decisions on an explicit retry. Sources are immutable by ID; changed text or summaries require a new version. Query and ingestion model fingerprints must match.
+
+Known citation groups/ranges are normalized to individually linked evidence IDs, with locator notes retained and the original response saved as `answer.raw.md`. Unknown or malformed references still fail validation. A failed run preserves the candidate as `answer.rejected.md` for local diagnosis and never presents it as the validated `answer.md`. Older ONNX indexes need rebuilding after the tokenizer truncation fix; see [provider compatibility](docs/PROVIDERS.md#existing-onnx-model).
 
 The context budget is enforced on the full rendered packet. A full chapter that does not fit causes an explicit error; Mori does not quietly clip it. Character budgets are conservative application controls, not exact model token counts. Configure them to fit the model actually used.
 
