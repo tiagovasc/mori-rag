@@ -74,6 +74,14 @@ The bridge sends the supplied source/prompt to the authenticated Codex service. 
 
 The subprocess receives an explicit runtime and Codex authentication environment allowlist; unrelated credentials such as the Jev key, Node startup hooks and proxy variables are not inherited. Shell, unified execution and hooks are disabled as additional restrictions. Existing Codex configuration and possible MCP tools still require review; this adapter does not claim complete tool isolation.
 
+## Context budget accounting
+
+`evidence_mode = "context"` packs the final answer prompt within `context_window_tokens`, after reserving `llm_max_output_tokens` and `context_overhead_tokens`. The default window is100,000, output reserve4,096 and overhead reserve1,024. Instructions, question, source identities, metadata, headings, complete originals, summaries and exact neighbor context are counted together. The saved `context_budget` record describes the method, required-bundle usage, passage usage, remaining allowance and limiting constraints; that audit record is not itself included in the prompt.
+
+The current server-controlled counting policy, `context_tokenizer = "utf8"`, charges one token per UTF-8 byte. This is conservative for byte-level tokenizers and can substantially underfill an actual model window. It is not a universal tokenizer guarantee. No embedding tokenizer is reused, no unsupported model-to-tokenizer mapping is inferred, and counting never downloads resources or calls a provider. The UI labels usage as estimated. `context_max_chars` and `llm_max_input_chars` remain additional explicit guards; packing reports when either prevents adding more passages.
+
+The answer reserve is sent as `max_tokens` by the HTTP adapter. The generic command contract does not enforce an output maximum; the supplied Codex SDK bridge adds its own instruction and the SDK may add opaque context. Configure a suitable overhead reserve and supported window for the chosen provider. Mori enforces its accounted prompt budget, not an exact provider-wide token total. No existing model context capacity is inferred or enlarged by changing this setting.
+
 ## Manual handoff
 
 `llm = "none"` still saves ranked `context.json`, `context.md` and `answer_prompt.txt`. Give the prompt to the LLM of your choice. This mode does not generate missing summaries or perform optional LLM reranking. It is the default because an application should not silently choose a paid answer provider.

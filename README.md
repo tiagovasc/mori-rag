@@ -13,7 +13,7 @@ flowchart TD
     Q[Question] --> E[Semantic search: 500 passages]
     E --> J[Jev relevance ranking: up to 100]
     J --> O{Optional LLM reranker}
-    O -->|Disabled by default| P[Keep Jev's selected passages]
+    O -->|Disabled by default| P[Keep up to 20 Jev-ranked passages]
     O -->|Enabled| R[Select up to 20 passages]
     Q --> S[Rank complete unit summaries with Jev]
     S --> U[Read the best unit in full]
@@ -33,11 +33,13 @@ A passage can answer a narrow question while hiding the qualifications around it
 |---|---|---:|
 | Complete source unit | Preserve the leading argument and its qualifications | 1 |
 | Summaries of other units | Broaden coverage without pretending those originals were read | 5 |
-| Original passages | Supply specific evidence from the remaining sources | Up to 100 |
+| Original passages | Supply specific evidence from the remaining sources | Up to 20 |
 
 Passages from units already included in full are excluded by default. Summary selections are distinct and exclude the full units. If the collection is small or too little evidence meets the relevance threshold, the packet reports the shortfall. It never pads results with duplicates or invents sources.
 
 Identical passages from different units keep their separate attribution and context. Source metadata, including authorship and extraction caveats, accompanies the evidence in both the saved packet and the model handoff.
+
+New indexes use readable passages of approximately **400 words**, preferring sentence and paragraph boundaries, with a **50-word overlap target**. Each passage can have several smaller search spans that fit the embedding model. Search uses the strongest matching span to retrieve its parent passage once; Jev, the answer model and the source reader receive the full passage. The configurable search-span target is **64 tokens including prefixes and special tokens**, separate from MiniLM's **256-token input ceiling**. A word target is not a token limit.
 
 The goal is better contextual evidence, not an unsupported claim to be the best system on every benchmark. Quality depends on unit boundaries, summaries, retrieval coverage, the rubric and the answer model. See [evaluation](docs/EVALUATION.md) for what is and is not tested.
 
@@ -75,7 +77,24 @@ python -m mori --config examples/mori.toml serve
 
 Open **http://127.0.0.1:8840**. Upload source units, adjust counts and context options, review the call budget, inspect source evidence, download a packet, or answer with your configured model. The interface is local-only; credentials stay on the server. The supplied Northbridge corpus is an explicitly fictional, redistributable teaching example.
 
-Open **Sources** inside the question box, just above **Evidence settings**, to choose what to search. Select any combination with the checkboxes, or use Select all / Select none. The menu starts collapsed and shows the selected-source count while closed. Both the budget and the complete retrieval pipeline use that selection, including full units, summaries and neighboring passages. Empty or unavailable selections block submission. Saved inquiries retain their source selection; adapters can expose named collection groups through the same interface.
+Open **Sources** inside the question box, just above **Settings**, to choose what to search. Select any combination with the checkboxes, or use Select all / Select none. The menu starts collapsed and shows the selected-source count while closed. Both the budget and the complete retrieval pipeline use that selection, including full units, summaries and neighboring passages. Empty or unavailable selections block submission. Saved inquiries retain their source selection; adapters can expose named collection groups through the same interface.
+
+**Settings** includes an **LLM model** dropdown for answers and optional reranking. The server's `llm_model` is the default; add permitted alternatives to `llm_models = ["your-other-model-id"]` in your configuration. The chosen model applies to that inquiry and is saved with its request. Model choice survives progress updates; unavailable choices require an explicit replacement. Imports continue using the server's default model. With no LLM configured, the dropdown is disabled and evidence handoff remains available.
+
+Under **Settings → Evidence size**, choose **Fixed passage counts** (the existing default) or **Fill context budget**. Budget mode starts at **100,000 tokens** and reserves the configured complete units and most relevant summaries first—one full unit and five summaries by default, with no summary duplicating a full unit. It then considers whole passages in relevance order, keeping each one that fits and trying smaller candidates when one does not. The fixed final-passage counts do not apply in this mode. Full sources and summaries are never shortened to make room; an oversized required bundle produces an explicit error.
+
+The budget covers the complete final prompt, including instructions, question, citations, metadata and neighboring context. It also reserves 4,096 tokens for the answer by default and 1,024 for provider overhead. Both the context window and answer reserve are editable in Settings. Results show the accounted usage and remaining capacity. Retrieval limits, the Jev shortlist, relevance thresholds and configured character guards still apply; increasing the context window alone does not expand the candidate pool or lower relevance requirements.
+
+**Token counting is conservative:** the current implementation charges one token per UTF-8 byte. This avoids assuming a model-specific tokenizer, but can leave substantial unused model capacity. The displayed values are estimates, not actual provider token usage. Providers may add hidden instructions, and command adapters such as Codex may not enforce the output reserve as a generation limit. See [provider budget limitations](docs/PROVIDERS.md#context-budget-accounting).
+
+```toml
+evidence_mode = "context"          # "fixed" retains explicit passage counts
+context_window_tokens = 100000
+full_units = 1
+summaries = 5
+llm_max_output_tokens = 4096        # answer reserve; HTTP also sends max_tokens
+context_overhead_tokens = 1024     # server-configured allowance for provider framing
+```
 
 A live progress panel shows each step from source preparation through retrieval, relevance scoring, evidence assembly, answering, citation checks and saving. Passage and summary counters advance as individual ratings finish, including reused cached decisions. Optional steps are marked skipped; failed steps retain the completed work. The bar measures workflow completion, not time remaining. Elapsed time and connection status remain visible during longer model calls, and progress polling retries automatically after a temporary connection failure.
 
@@ -106,7 +125,7 @@ The choice applies to **both corpus and query embeddings**. Switching models req
 
 ## Source and unit contract
 
-A **source** is a work: a book, video, article or podcast series. A **unit** is the complete piece it is reasonable to read together: a chapter, lecture, article or episode. A **chunk** is only a retrieval window inside a unit.
+A **source** is a work: a book, video, article or podcast series. A **unit** is the complete piece it is reasonable to read together: a chapter, lecture, article or episode. A **passage** is a readable section inside a unit; smaller **search spans** find that passage without imposing the encoder's token limit on the displayed evidence.
 
 ```json
 {
@@ -155,7 +174,7 @@ All settings live in TOML. The browser exposes the frequently changed evidence s
 ```toml
 retrieval_k = 500
 jev_k = 100
-final_passages = 100
+final_passages = 20
 full_units = 1
 summaries = 5
 min_relevance = 40.0
@@ -166,9 +185,15 @@ rerank_k = 20
 rating_neighbors = 0         # additional same-unit chunks shown to Jev
 answer_neighbors = 0         # additional same-unit chunks in the answer packet
 exclude_full_unit_passages = true
+chunk_strategy = "sentence"
+chunk_words = 400            # readable evidence target, not encoder input length
+chunk_overlap = 50           # approximate overlap at complete boundaries
+embedding_span_tokens = 64   # search input, including prefix and special tokens
 ```
 
-Want **one complete chapter, five summaries and twenty passages without another reranker**? Set `final_passages = 20`. Want a heavier model to curate the Jev shortlist? Set `rerank_enabled = true`. Neighbor context before relevance scoring and in the final answer are separate switches.
+The defaults supply **one complete unit, five summaries and up to twenty passages without another reranker**. Set `final_passages` to change the passage count, or `rerank_enabled = true` to let a heavier model curate the Jev shortlist. Neighbor context before relevance scoring and in the final answer are separate switches; a zero setting still supplies the entire readable passage.
+
+The sentence splitter uses punctuation and paragraph heuristics, not a linguistic model. Unpunctuated or unusually long sentences fall back to whole-word boundaries; review those passages, especially in OCR and transcripts. These defaults are a starting point for evaluation, not a universal optimum. Separating small search spans from larger reading context follows the [parent-document retrieval pattern](https://reference.langchain.com/python/langchain-classic/retrievers/parent_document_retriever/ParentDocumentRetriever); [Azure's chunking guidance](https://learn.microsoft.com/en-us/azure/search/vector-search-how-to-chunk-documents) likewise recommends respecting content boundaries and evaluating size/overlap for the actual corpus and models.
 
 By default, all summaries are scored directly. For a larger corpus, set `summary_candidates` to preselect a smaller summary pool semantically before Jev, and evaluate the recall tradeoff. A preflight call budget prevents unexpectedly rating an entire large collection.
 
@@ -206,6 +231,8 @@ status.json              Completion or explicit failure
 ```
 
 Successful Jev decisions are cached by exact question, evidence, rubric, endpoint and model request. Interrupted queries reuse completed decisions on an explicit retry. Sources are immutable by ID; changed text or summaries require a new version. Query and ingestion model fingerprints must match.
+
+The sentence-passage/search-span representation requires a **new index directory**. Re-ingest the same immutable units there, verify coverage and retrieval, then switch the application configuration. Preserve the old index and inquiry directories: historical answers retain their original evidence and are not regenerated by opening them. To continue an older word-window index, explicitly select `chunk_strategy = "words"` and its original chunk/model settings; this retains the legacy fingerprint. See [passage compatibility](docs/UNITS.md#passages-search-spans-and-compatibility).
 
 Known citation groups/ranges are normalized to individually linked evidence IDs, with locator notes retained and the original response saved as `answer.raw.md`. Unknown or malformed references still fail validation. A failed run preserves the candidate as `answer.rejected.md` for local diagnosis and never presents it as the validated `answer.md`. Older ONNX indexes need rebuilding after the tokenizer truncation fix; see [provider compatibility](docs/PROVIDERS.md#existing-onnx-model).
 

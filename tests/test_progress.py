@@ -51,7 +51,7 @@ class Fixture(unittest.TestCase):
         self.store = Store(self.temp.name)
         self.config = Config(embedding='demo', embedding_model='progress-fixture',
                              retrieval_k=3, jev_k=3, final_passages=3, rerank_k=3,
-                             full_units=0, summaries=0, chunk_words=40, chunk_overlap=0,
+                             full_units=0, summaries=0, chunk_strategy='words', chunk_words=40, chunk_overlap=0,
                              min_relevance=0, summary_min_relevance=0, workers=2).validate()
         self.embeddings = Embeddings(self.config)
         ingest(self.store, [{'id': str(index), 'source_id': 'fixture', 'title': 'Synthetic unit',

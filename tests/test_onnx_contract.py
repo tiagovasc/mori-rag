@@ -85,7 +85,7 @@ class OnnxContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Embedding fingerprint mismatch before import'):
             ingest(legacy_store, [], Config(embedding='onnx'), Embeddings(Config(embedding='onnx')))
         for name in ('demo', 'local', 'http'):
-            config = Config(embedding=name)
+            config = Config(embedding=name, chunk_strategy='words')
             expected = {
                 'provider': name, 'model': config.embedding_model, 'revision': config.embedding_revision,
                 'query_prefix': config.query_prefix, 'document_prefix': config.document_prefix,

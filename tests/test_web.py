@@ -116,6 +116,17 @@ class WebTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn('maximum_rating_decisions', json.loads(body))
 
+    def test_saved_handoff_preserves_exact_newlines(self):
+        run_id = '20261023T000000-1234567890'
+        run = Path(self.temp.name) / 'runs' / run_id
+        run.mkdir(parents=True)
+        original = 'Synthetic instruction.\nSource first.\r\nSource second.\rSource last.\n'
+        (run / 'context.json').write_text('{}', encoding='utf-8')
+        (run / 'answer_prompt.txt').write_bytes(original.encode('utf-8'))
+        code, body, _ = self.request('/api/runs/' + run_id)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)['prompt'], original)
+
     def test_upload_requires_explicit_boolean_summary_consent(self):
         uploads = Path(self.temp.name) / 'uploads'
         before = set(uploads.glob('*'))

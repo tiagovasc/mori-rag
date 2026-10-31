@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-31 — Readable passages and configurable evidence
+
+- New indexes retrieve short search spans and return the complete passage containing the best match. Passages target 400 words with about 50 words of overlap. See [index compatibility](docs/UNITS.md#passages-search-spans-and-compatibility) before migrating an existing corpus.
+- In **Settings**, choose a configured answer model and either fixed passage counts or a context budget. Budget mode reserves complete units and distinct summaries first, then adds whole ranked passages. The default window is 100,000 tokens; its conservative byte estimate can leave room unused.
+- Saved evidence and handoff prompts preserve original line endings on Windows.
+
 ## Live workflow progress — 2026-10-23
 
 The local chat now shows a live workflow bar and every query stage: preparation, question embedding, retrieval, passage scoring, summary scoring, optional reranking, evidence assembly, answering, citation checks and saving. Completed-item and cache counts reflect actual finished work, including out-of-order scoring responses. Optional stages are skipped explicitly. Progress measures stages rather than predicted duration; model calls remain visibly active with elapsed time. Imports show their extraction and indexing stages without invented per-unit counts.

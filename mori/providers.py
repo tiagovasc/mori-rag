@@ -11,6 +11,20 @@ import urllib.error
 import urllib.request
 
 from .store import digest, vector
+from .chunking import token_spans
+
+
+def expected_embedding_fingerprint(config, embeddings):
+    """Include the ingestion policy even for older/custom embedding adapters."""
+    result = dict(embeddings.fingerprint)
+    if config.chunk_strategy == 'sentence':
+        span_method = getattr(type(embeddings), 'embedding_spans', None)
+        result.update(chunk_strategy='sentence-v1', retrieval_pooling='max-child-cosine-v1',
+                      summary_pooling='max-child-cosine-v1')
+        result.setdefault('embedding_span_tokens', min(config.embedding_span_tokens, config.embedding_token_limit))
+        result.setdefault('embedding_spans', 'adapter-declared-spans-v1' if callable(span_method)
+                          else 'adapter-whole-parent-v1')
+    return result
 
 
 class NoProviderRedirect(urllib.request.HTTPRedirectHandler):
@@ -49,6 +63,7 @@ class Embeddings:
     def __init__(self, config):
         self.c = config
         self.model = None
+        self._tokenizer = None
 
     @property
     def fingerprint(self):
@@ -65,7 +80,69 @@ class Embeddings:
             # Older ONNX indexes may have inherited silent tokenizer truncation.
             # Require explicit re-embedding rather than mixing changed vectors.
             result['onnx_tokenization'] = 'untruncated-v1'
+        if self.c.chunk_strategy == 'sentence':
+            result.update(chunk_strategy='sentence-v1', retrieval_pooling='max-child-cosine-v1',
+                          summary_pooling='max-child-cosine-v1',
+                          embedding_span_tokens=min(self.c.embedding_span_tokens, self.c.embedding_token_limit),
+                          embedding_spans={'onnx': 'measured-tokenizer-v1', 'local': 'measured-tokenizer-v1',
+                                           'http': 'utf8-byte-bound-no-tokenizer-v1',
+                                           'demo': 'demo-whole-parent-v1'}[self.c.embedding])
         return result
+
+    def _onnx_tokenizer(self):
+        if self._tokenizer is None:
+            from pathlib import Path
+            from tokenizers import Tokenizer
+            self._tokenizer = Tokenizer.from_file(str(Path(self.c.embedding_model) / 'tokenizer.json'))
+        self._tokenizer.no_truncation()
+        return self._tokenizer
+
+    def _local_model(self):
+        if self.model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError:
+                raise RuntimeError('Install local embeddings: pip install "mori-rag[local]"') from None
+            self.model = SentenceTransformer(self.c.embedding_model, revision=self.c.embedding_revision or None, trust_remote_code=False)
+        return self.model
+
+    def embedding_spans(self, text):
+        """Exact relative source spans covering a complete readable passage.
+
+        Local tokenizers measure prefixed inputs including special tokens. HTTP
+        has no declared tokenizer: its conservative UTF-8-byte bound is explicitly
+        a heuristic, not a claim of verified token capacity. Custom adapters can
+        implement this method with their own tokenizer and explicit fingerprint.
+        """
+        if self.c.embedding == 'demo':
+            return [{'seq': 0, 'start': 0, 'end': len(text), 'text': text}]
+        prefix = self.c.document_prefix
+        limit = min(self.c.embedding_span_tokens, self.c.embedding_token_limit)
+        if self.c.embedding == 'onnx':
+            tokenizer = self._onnx_tokenizer()
+            if hasattr(tokenizer, 'no_padding'):
+                tokenizer.no_padding()
+            # The config is optional for user-supplied ONNX adapters. A known
+            # architectural ceiling always takes precedence over a larger budget.
+            from pathlib import Path
+            model_config = Path(self.c.embedding_model) / 'config.json'
+            if model_config.is_file():
+                maximum = json.loads(model_config.read_text(encoding='utf-8')).get('max_position_embeddings')
+                if type(maximum) is int and maximum > 0:
+                    limit = min(limit, maximum)
+            def count(value):
+                encoded = tokenizer.encode_batch([prefix + value])[0]
+                return sum(encoded.attention_mask)
+        elif self.c.embedding == 'local':
+            model = self._local_model()
+            limit = min(limit, model.max_seq_length)
+            def count(value):
+                return len(model.tokenizer([prefix + value], truncation=False,
+                                          add_special_tokens=True)['input_ids'][0])
+        else:
+            def count(value):
+                return len((prefix + value).encode('utf-8')) + 2
+        return token_spans(text, count, limit)
 
     def encode(self, texts, query=False):
         prepared = [(self.c.query_prefix if query else self.c.document_prefix) + text for text in texts]
@@ -84,17 +161,16 @@ class Embeddings:
             from pathlib import Path
             import numpy as np
             import onnxruntime as ort
-            from tokenizers import Tokenizer
             if self.model is None:
                 directory = Path(self.c.embedding_model)
-                tokenizer = Tokenizer.from_file(str(directory / 'tokenizer.json'))
-                tokenizer.no_truncation()
+                tokenizer = self._onnx_tokenizer()
                 tokenizer.enable_padding()
                 options = ort.SessionOptions()
                 options.intra_op_num_threads = 2
                 session = ort.InferenceSession(str(directory / self.c.onnx_model_file), sess_options=options, providers=['CPUExecutionProvider'])
                 self.model = (tokenizer, session)
             tokenizer, session = self.model
+            tokenizer.enable_padding()
             encoded = tokenizer.encode_batch(prepared)
             if any(len(e.ids) > self.c.embedding_token_limit for e in encoded):
                 raise ValueError('Embedding would exceed token limit; no ONNX input was truncated')
@@ -115,12 +191,7 @@ class Embeddings:
                 values = (hidden * mask).sum(axis=1) / np.maximum(mask.sum(axis=1), 1)
             return [vector(row) for row in values.tolist()]
         if self.c.embedding == 'local':
-            if self.model is None:
-                try:
-                    from sentence_transformers import SentenceTransformer
-                except ImportError:
-                    raise RuntimeError('Install local embeddings: pip install "mori-rag[local]"') from None
-                self.model = SentenceTransformer(self.c.embedding_model, revision=self.c.embedding_revision or None, trust_remote_code=False)
+            self._local_model()
             lengths = self.model.tokenizer(prepared, truncation=False, add_special_tokens=True)['input_ids']
             if any(len(tokens) > self.model.max_seq_length for tokens in lengths):
                 raise ValueError("Embedding would truncate text; reduce chunk_words or use a longer-context embedding model")

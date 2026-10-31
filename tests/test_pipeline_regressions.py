@@ -33,7 +33,7 @@ class PipelineRegressionTests(unittest.TestCase):
         self.store = Store(self.temp.name)
         self.config = Config(embedding='demo', embedding_model='test-fixture-v1',
                              retrieval_k=10, jev_k=10, final_passages=10, rerank_k=10,
-                             full_units=0, summaries=0, chunk_words=40, chunk_overlap=0,
+                             full_units=0, summaries=0, chunk_strategy='words', chunk_words=40, chunk_overlap=0,
                              min_relevance=0, summary_min_relevance=0).validate()
         self.embeddings = Embeddings(self.config)
 
@@ -217,7 +217,7 @@ class PipelineRegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'active final passage cap'):
             dataclasses.replace(config, rerank_enabled=True).validate()
         config = Config(retrieval_k=10, jev_k=10, rerank_enabled=True, rerank_k=5).validate()
-        self.assertEqual(config.final_passages, 100)
+        self.assertEqual(config.final_passages, 20)
         with self.assertRaisesRegex(ValueError, 'active final passage cap'):
             dataclasses.replace(config, rerank_enabled=False).validate()
 

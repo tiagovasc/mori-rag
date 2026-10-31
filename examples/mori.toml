@@ -1,7 +1,12 @@
 # All unspecified fields keep the documented defaults.
 retrieval_k = 500
 jev_k = 100
-final_passages = 100
+final_passages = 20
+# Select "context" to fill the remaining prompt allowance with whole passages.
+evidence_mode = "fixed"
+context_window_tokens = 100000
+context_overhead_tokens = 1024
+llm_max_output_tokens = 4096
 full_units = 1
 summaries = 5
 min_relevance = 40.0
@@ -12,6 +17,10 @@ rerank_k = 20
 rating_neighbors = 0
 answer_neighbors = 0
 exclude_full_unit_passages = true
+chunk_strategy = "sentence"
+chunk_words = 400
+chunk_overlap = 50
+embedding_span_tokens = 64
 context_max_chars = 180000
 llm_max_input_chars = 200000
 max_rating_calls = 2000
@@ -19,3 +28,6 @@ embedding = "local"
 embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
 jev_model = "jev-latest"
 llm = "none"
+# Optional model choices for Settings after configuring an LLM provider.
+# llm_model is always included; additional IDs must work with that same provider.
+llm_models = []

@@ -12,7 +12,9 @@ import urllib.request
 import zipfile
 from xml.etree import ElementTree
 
-from .store import digest, validate_unit, vector
+from .store import compatible_fingerprint, digest, validate_unit, vector
+from .chunking import sentence_chunks
+from .providers import expected_embedding_fingerprint
 
 
 def chunks(text, words, overlap):
@@ -185,10 +187,13 @@ def fetch_public(url):
 
 
 def ingest(store, raw_units, config, embeddings, llm=None, summarize=False):
+    embedding_fingerprint = expected_embedding_fingerprint(config, embeddings)
+    sentence_strategy = config.chunk_strategy == 'sentence'
+    span_method = getattr(type(embeddings), 'embedding_spans', None)
     old = store.fingerprint()
     if old:
         old = {**old, 'requested_dimensions': old.get('requested_dimensions', 0)}
-    if old and any(old.get(key) != value for key, value in embeddings.fingerprint.items()):
+    if old and not compatible_fingerprint(old, embedding_fingerprint):
         raise ValueError("Embedding fingerprint mismatch before import")
     existing = {u['id']: u for u in store.units()}
     staged, prepared, chunk_map, seen = [], [], {}, set()
@@ -222,7 +227,8 @@ def ingest(store, raw_units, config, embeddings, llm=None, summarize=False):
                 'claims or replace a summary with its opening excerpt. Return the summary only.\nSOURCE DATA:\n' + unit['text'])
             unit['metadata'] = {**unit['metadata'], 'summary_provenance': {'provider': config.llm, 'model': config.llm_model}}
             unit = validate_unit(unit, config.unit_max_chars)
-        rows = chunks(unit['text'], config.chunk_words, config.chunk_overlap)
+        splitter = sentence_chunks if sentence_strategy else chunks
+        rows = splitter(unit['text'], config.chunk_words, config.chunk_overlap)
         if not rows:
             raise ValueError("Unit has no passage content")
         for row in rows:
@@ -233,6 +239,52 @@ def ingest(store, raw_units, config, embeddings, llm=None, summarize=False):
         raise ValueError("No source units supplied")
     fresh = [unit for unit in prepared if unit['id'] not in existing]
     all_rows = [row for unit in fresh for row in chunk_map[unit['id']]]
+    if sentence_strategy:
+        def split_embedding(text):
+            spans = (embeddings.embedding_spans(text) if callable(span_method) else
+                     [{'seq': 0, 'start': 0, 'end': len(text), 'text': text}])
+            return _validate_embedding_spans(text, spans)
+
+        # Plan every exact span before the first encode call. A later invalid or
+        # unbreakable input cannot consume a partial import's provider budget.
+        for row in all_rows:
+            row['_children'] = split_embedding(row['text'])
+        for unit in fresh:
+            unit['_summary_children'] = split_embedding(unit['summary'])
+        passage_children = [child for row in all_rows for child in row['_children']]
+        summary_children = [child for unit in fresh for child in unit['_summary_children']]
+        for children, label in ((passage_children, 'passage'), (summary_children, 'summary segment')):
+            for offset in range(0, len(children), config.embedding_batch):
+                batch = children[offset:offset + config.embedding_batch]
+                encoded = embeddings.encode([child['text'] for child in batch])
+                if len(encoded) != len(batch):
+                    raise ValueError('Embedding provider omitted ' + label + 's')
+                for child, value in zip(batch, encoded):
+                    child['vector'] = vector(value)
+            if children and len({len(child['vector']) for child in children}) != 1:
+                raise ValueError('Embedding ' + label + ' dimensions disagree')
+        dimensions = {len(child['vector']) for child in passage_children + summary_children}
+        if len(dimensions) > 1:
+            raise ValueError('Embedding dimensions disagree')
+        for row in all_rows:
+            children = row.pop('_children')
+            row['search_vectors'] = [child['vector'] for child in children]
+            row['embedding_spans'] = [dict(seq=i, start=row['start'] + child['start'],
+                                            end=row['start'] + child['end']) for i, child in enumerate(children)]
+            # Compatibility column only: new retrieval uses all search_vectors.
+            row['vector'] = row['search_vectors'][0]
+        for unit in fresh:
+            children = unit.pop('_summary_children')
+            unit['summary_search_vectors'] = [child['vector'] for child in children]
+            unit['summary_embedding_spans'] = [dict(seq=i, start=child['start'], end=child['end'])
+                                               for i, child in enumerate(children)]
+            unit['summary_vector'] = unit['summary_search_vectors'][0]
+        if fresh:
+            fingerprint = {**embedding_fingerprint, 'dimensions': dimensions.pop()}
+            if old and old != {**fingerprint, 'requested_dimensions': fingerprint.get('requested_dimensions', 0)}:
+                raise ValueError('Embedding fingerprint/dimensions changed')
+            store.add(fresh, chunk_map, fingerprint)
+        return {**store.stats(), 'added_units': len(fresh), 'unchanged_units': len(prepared) - len(fresh)}
     for offset in range(0, len(all_rows), config.embedding_batch):
         batch = all_rows[offset:offset + config.embedding_batch]
         values = embeddings.encode([r['text'] for r in batch])
@@ -261,3 +313,26 @@ def ingest(store, raw_units, config, embeddings, llm=None, summarize=False):
             raise ValueError("Embedding fingerprint/dimensions changed")
         store.add(fresh, chunk_map, fingerprint)
     return {**store.stats(), 'added_units': len(fresh), 'unchanged_units': len(prepared) - len(fresh)}
+
+
+def _validate_embedding_spans(text, spans):
+    """Require exact ordered coverage, with no silently dropped source content."""
+    if not isinstance(spans, list) or not spans:
+        raise ValueError('Embedding adapter must return nonempty exact source spans')
+    result, covered, previous_start = [], 0, -1
+    for index, source in enumerate(spans):
+        if not isinstance(source, dict):
+            raise ValueError('Invalid embedding source span')
+        start, end = source.get('start'), source.get('end')
+        if (type(start) is not int or type(end) is not int or
+                not 0 <= start < end <= len(text) or start > covered or
+                start <= previous_start or end <= covered):
+            raise ValueError('Embedding spans must cover the complete text in source order')
+        exact = text[start:end]
+        if source.get('text', exact) != exact or not exact.strip():
+            raise ValueError('Embedding span does not match original text')
+        result.append({'seq': index, 'start': start, 'end': end, 'text': exact})
+        covered, previous_start = end, start
+    if covered != len(text):
+        raise ValueError('Embedding spans must cover the complete text')
+    return result

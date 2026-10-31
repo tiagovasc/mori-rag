@@ -11,6 +11,7 @@ import threading
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from .config import Config
+from .budget import COUNTING_METHOD, COUNTING_NOTE
 from .ingest import ingest, load_file
 from .pipeline import plan, query
 from .providers import Embeddings, LLM
@@ -18,13 +19,17 @@ from .progress import Progress, UPLOAD_STEPS
 
 UI_FIELDS = {'retrieval_k', 'jev_k', 'final_passages', 'full_units', 'summaries', 'min_relevance',
              'summary_min_relevance', 'summary_candidates', 'rerank_enabled', 'rerank_k',
-             'rating_neighbors', 'answer_neighbors', 'exclude_full_unit_passages'}
+             'rating_neighbors', 'answer_neighbors', 'exclude_full_unit_passages', 'llm_model',
+             'evidence_mode', 'context_window_tokens', 'llm_max_output_tokens'}
 
 
 def create_server(store, config, port=8840, *, allow_uploads=True):
     """Bind a loopback server without starting its event loop."""
     if type(allow_uploads) is not bool:
         raise ValueError('allow_uploads must be a boolean')
+    config.validate()
+    model_choices = config.available_llm_models()
+    permitted_models = set(model_choices) | ({''} if not config.llm_model else set())
     token = secrets.token_hex(32)
     origin = f'http://127.0.0.1:{port}'
     static = Path(__file__).parent / 'static'
@@ -90,7 +95,11 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
                 return self.send(200, {'stats': store.stats(), 'job': job_snapshot(),
                                       'sources': store.source_catalog(), 'allow_uploads': allow_uploads,
                                       'settings': {k: getattr(config, k) for k in sorted(UI_FIELDS)},
-                                      'providers': {'embedding': config.embedding, 'llm': config.llm, 'model': config.llm_model}})
+                                      'context_budget': {'counting_method': COUNTING_METHOD,
+                                                         'counting_note': COUNTING_NOTE,
+                                                         'overhead_reserve_tokens': config.context_overhead_tokens},
+                                      'providers': {'embedding': config.embedding, 'llm': config.llm, 'model': config.llm_model,
+                                                    'models': model_choices}})
             if path == '/api/runs':
                 runs = []
                 for _, item in sorted(saved_runs().items(), reverse=True)[:100]:
@@ -106,7 +115,7 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
                     return self.send(404, {'error': 'No completed context for that run'})
                 packet = json.loads((run / 'context.json').read_text(encoding='utf-8'))
                 return self.send(200, {'context': packet, 'answer': (run / 'answer.md').read_text(encoding='utf-8') if (run / 'answer.md').exists() else '',
-                                       'prompt': (run / 'answer_prompt.txt').read_text(encoding='utf-8')})
+                                       'prompt': (run / 'answer_prompt.txt').read_bytes().decode('utf-8')})
             if path == '/open':
                 values = parse_qs(parts.query, keep_blank_values=True).get('collection', [])
                 if len(values) != 1 or values[0] not in {row['id'] for row in store.source_catalog()}:
@@ -140,6 +149,9 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
                 overrides = body.get('settings', {})
                 if not isinstance(overrides, dict) or set(overrides) - UI_FIELDS:
                     raise ValueError('Unsupported UI setting')
+                if 'llm_model' in overrides and (not isinstance(overrides['llm_model'], str)
+                                                or overrides['llm_model'] not in permitted_models):
+                    raise ValueError('Unsupported LLM model')
                 active = replace(config, **overrides).validate()
                 selected = store.select_sources(body['sources']) if path in ('/api/query', '/api/plan') and 'sources' in body else store
                 if path == '/api/plan':

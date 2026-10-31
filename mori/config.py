@@ -9,7 +9,7 @@ import tomllib
 class Config:
     retrieval_k: int = 500
     jev_k: int = 100
-    final_passages: int = 100
+    final_passages: int = 20
     full_units: int = 1
     summaries: int = 5
     min_relevance: float = 40.0
@@ -20,8 +20,13 @@ class Config:
     rating_neighbors: int = 0
     answer_neighbors: int = 0
     exclude_full_unit_passages: bool = True
-    chunk_words: int = 120
-    chunk_overlap: int = 20
+    chunk_words: int = 400
+    chunk_overlap: int = 50
+    chunk_strategy: str = "sentence"
+    evidence_mode: str = "fixed"
+    context_window_tokens: int = 100000
+    context_overhead_tokens: int = 1024
+    context_tokenizer: str = "utf8"  # Server-controlled counting policy, not a model mapping.
     context_max_chars: int = 180000
     llm_max_input_chars: int = 200000
     unit_max_chars: int = 500000
@@ -36,6 +41,7 @@ class Config:
     onnx_model_file: str = "onnx/model_quantized.onnx"
     onnx_pooling: str = "mean"
     embedding_token_limit: int = 256
+    embedding_span_tokens: int = 64
     embedding_url: str = "http://127.0.0.1:11434/v1/embeddings"
     embedding_key_env: str = "MORI_EMBEDDING_KEY"
     query_prefix: str = ""
@@ -47,6 +53,7 @@ class Config:
     jev_key_env: str = "TYPESAFE_API_KEY"
     llm: str = "none"
     llm_model: str = ""
+    llm_models: list[str] = field(default_factory=list)
     llm_url: str = "http://127.0.0.1:11434/v1/chat/completions"
     llm_key_env: str = "MORI_LLM_KEY"
     llm_command: list[str] = field(default_factory=list)
@@ -70,11 +77,12 @@ class Config:
                 raise ValueError(f"{name} must be a string")
         for name in ("retrieval_k", "jev_k", "final_passages", "rerank_k", "chunk_words",
                      "context_max_chars", "llm_max_input_chars", "unit_max_chars", "request_max_bytes",
-                     "max_rating_calls", "workers", "timeout", "embedding_batch", "llm_max_output_tokens"):
+                     "max_rating_calls", "workers", "timeout", "embedding_batch", "llm_max_output_tokens",
+                     "context_window_tokens"):
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        for name in ("full_units", "summaries", "summary_candidates", "rating_neighbors", "answer_neighbors", "chunk_overlap", "retries", "embedding_dimensions"):
+        for name in ("full_units", "summaries", "summary_candidates", "rating_neighbors", "answer_neighbors", "chunk_overlap", "retries", "embedding_dimensions", "context_overhead_tokens"):
             if type(getattr(self, name)) is not int or getattr(self, name) < 0:
                 raise ValueError(f"{name} must be a nonnegative integer")
         for name in ("min_relevance", "summary_min_relevance"):
@@ -84,23 +92,47 @@ class Config:
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a boolean")
         active_passage_cap = self.rerank_k if self.rerank_enabled else self.final_passages
-        if self.jev_k > self.retrieval_k or active_passage_cap > self.jev_k:
+        if self.evidence_mode not in ('fixed', 'context'):
+            raise ValueError("evidence_mode must be fixed or context")
+        if self.context_tokenizer != 'utf8':
+            raise ValueError("context_tokenizer must be utf8; model-specific tokenizers are not configured")
+        if self.context_window_tokens > 2000000:
+            raise ValueError("context_window_tokens must not exceed 2000000")
+        if (self.evidence_mode == 'context'
+                and self.llm_max_output_tokens + self.context_overhead_tokens >= self.context_window_tokens):
+            raise ValueError("Context window must exceed the output and adapter overhead reserves")
+        if self.jev_k > self.retrieval_k or (self.evidence_mode == 'fixed' and active_passage_cap > self.jev_k):
             raise ValueError("Passage counts must follow retrieval_k >= jev_k >= the active final passage cap")
         if self.chunk_overlap >= self.chunk_words:
             raise ValueError("chunk_overlap must be smaller than chunk_words")
+        if self.chunk_strategy not in ('sentence', 'words'):
+            raise ValueError("chunk_strategy must be sentence or words")
         if not isinstance(self.rubric, list) or not 2 <= len(self.rubric) <= 10 or any(not isinstance(x, str) or not x.strip() for x in self.rubric):
             raise ValueError("Jev requires 2–10 nonempty ordered rubric descriptions")
         if self.embedding not in ("local", "onnx", "http", "demo") or self.llm not in ("none", "http", "command"):
             raise ValueError("Unknown provider")
         if type(self.embedding_token_limit) is not int or self.embedding_token_limit < 8 or self.onnx_pooling not in ('mean', 'sentence_embedding'):
             raise ValueError("Invalid embedding token limit or ONNX pooling")
+        if type(self.embedding_span_tokens) is not int or self.embedding_span_tokens < 8:
+            raise ValueError("embedding_span_tokens must be an integer of at least 8")
         if not isinstance(self.llm_command, list) or any(not isinstance(x, str) or not x for x in self.llm_command):
             raise ValueError("llm_command must be an argument array, never a shell command string")
+        if (not isinstance(self.llm_models, list) or len(self.llm_models) > 100
+                or any(not isinstance(model, str) or not 1 <= len(model) <= 256
+                       or any(char.isspace() or not char.isprintable() for char in model)
+                       for model in self.llm_models)):
+            raise ValueError("llm_models must contain at most 100 nonempty model IDs without whitespace or control characters")
+        if len(set(self.llm_models)) != len(self.llm_models):
+            raise ValueError("llm_models must not contain duplicate model IDs")
         if self.llm == "command" and not self.llm_command:
             raise ValueError("command provider needs llm_command")
         if self.workers > 64 or self.retrieval_k > 10000 or self.rating_neighbors > 10 or self.answer_neighbors > 10:
             raise ValueError("Requested concurrency, retrieval or neighbors exceeds the reference implementation limit")
         return self
+
+    def available_llm_models(self):
+        """Server-configured choices; the existing default always remains available."""
+        return list(dict.fromkeys(([self.llm_model] if self.llm_model else []) + self.llm_models))
 
     def public(self):
         return asdict(self)

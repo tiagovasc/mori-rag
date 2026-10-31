@@ -45,6 +45,23 @@ def vector(values):
     return [x / norm for x in scaled]
 
 
+def compatible_fingerprint(stored, expected):
+    """Legacy metadata may be extra; retrieval policies must match both ways."""
+    if not isinstance(stored, dict) or not isinstance(expected, dict):
+        return False
+    stored = {**stored, 'requested_dimensions': stored.get('requested_dimensions', 0)}
+    expected = {**expected, 'requested_dimensions': expected.get('requested_dimensions', 0)}
+    if any(stored.get(key) != value for key, value in expected.items()):
+        return False
+    absent = object()
+    for key in ('chunk_strategy', 'retrieval_pooling', 'embedding_span_tokens', 'embedding_spans'):
+        if stored.get(key, absent) != expected.get(key, absent):
+            return False
+    if 'max-child-cosine-v1' in (stored.get('summary_pooling'), expected.get('summary_pooling')):
+        return stored.get('summary_pooling') == expected.get('summary_pooling')
+    return True
+
+
 class Store:
     def __init__(self, directory):
         self.root = Path(directory).resolve()
@@ -59,6 +76,13 @@ class Store:
             CREATE TABLE IF NOT EXISTS chunks(id TEXT PRIMARY KEY,unit_id TEXT NOT NULL REFERENCES units(id),
               seq INTEGER NOT NULL,start INTEGER NOT NULL,end INTEGER NOT NULL,text TEXT NOT NULL,vector TEXT NOT NULL,
               UNIQUE(unit_id,seq));
+            CREATE TABLE IF NOT EXISTS chunk_embeddings(chunk_id TEXT NOT NULL REFERENCES chunks(id),
+              seq INTEGER NOT NULL,start INTEGER NOT NULL,end INTEGER NOT NULL,vector TEXT NOT NULL,
+              PRIMARY KEY(chunk_id,seq));
+            CREATE TABLE IF NOT EXISTS summary_embeddings(unit_id TEXT NOT NULL REFERENCES units(id),
+              seq INTEGER NOT NULL,start INTEGER NOT NULL,end INTEGER NOT NULL,vector TEXT NOT NULL,
+              PRIMARY KEY(unit_id,seq));
+            CREATE TABLE IF NOT EXISTS chunk_details(chunk_id TEXT PRIMARY KEY REFERENCES chunks(id),value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cache(key TEXT PRIMARY KEY,value TEXT NOT NULL,created TEXT NOT NULL);
             """)
 
@@ -80,6 +104,30 @@ class Store:
 
     def add(self, units, chunks, fingerprint):
         """A whole import commits together; changed IDs require a new explicit version."""
+        child_policy = fingerprint.get('retrieval_pooling') == 'max-child-cosine-v1'
+        dimensions = set()
+        for unit in units:
+            dimensions.add(len(vector(unit['summary_vector'])))
+            if child_policy:
+                dimensions.update(_validate_children(unit.get('summary_search_vectors'), unit.get('summary_embedding_spans'),
+                                                     0, len(unit['summary'])))
+            covered = 0
+            for index, row in enumerate(chunks[unit['id']]):
+                start, end = row['start'], row['end']
+                if (type(start) is not int or type(end) is not int or
+                        not 0 <= start < end <= len(unit['text']) or
+                        row['text'] != unit['text'][start:end] or row['seq'] != index):
+                    raise ValueError('Stored passage must match exact original offsets and sequence')
+                dimensions.add(len(vector(row['vector'])))
+                if child_policy:
+                    if start > covered or end <= covered:
+                        raise ValueError('Parent passages must cover the complete source')
+                    dimensions.update(_validate_children(row.get('search_vectors'), row.get('embedding_spans'), start, end))
+                covered = end
+            if child_policy and covered != len(unit['text']):
+                raise ValueError('Parent passages must cover the complete source')
+        if len(dimensions) != 1 or fingerprint.get('dimensions', next(iter(dimensions), None)) not in dimensions:
+            raise ValueError('Embedding dimensions disagree before storage')
         encoded = json.dumps(fingerprint, sort_keys=True)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -97,8 +145,18 @@ class Store:
                 db.execute("INSERT INTO units VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
                     unit['id'], unit['source_id'], unit['title'], unit['kind'], unit['locator'], unit['text'], unit['summary'],
                     json.dumps(unit['metadata'], ensure_ascii=False), unit['hash'], now(), json.dumps(unit['summary_vector'])))
+                if child_policy:
+                    for span, values in zip(unit['summary_embedding_spans'], unit['summary_search_vectors']):
+                        db.execute('INSERT INTO summary_embeddings VALUES(?,?,?,?,?)',
+                                   (unit['id'], span['seq'], span['start'], span['end'], json.dumps(values)))
                 for row in chunks[unit['id']]:
                     db.execute("INSERT INTO chunks VALUES(?,?,?,?,?,?,?)", (row['id'], unit['id'], row['seq'], row['start'], row['end'], row['text'], json.dumps(row['vector'])))
+                    if child_policy:
+                        for span, values in zip(row['embedding_spans'], row['search_vectors']):
+                            db.execute('INSERT INTO chunk_embeddings VALUES(?,?,?,?,?)',
+                                       (row['id'], span['seq'], span['start'], span['end'], json.dumps(values)))
+                        db.execute('INSERT INTO chunk_details VALUES(?,?)',
+                                   (row['id'], json.dumps({'boundary': row.get('boundary', 'unspecified')})))
 
     def source_catalog(self):
         """Count source groups without loading original text or embedding vectors."""
@@ -122,9 +180,19 @@ class Store:
         where, values = _source_filter(source_ids, 'units')
         with self.connect() as db:
             rows = [dict(r) for r in db.execute("SELECT * FROM units" + where + " ORDER BY id", values)]
+            child_policy = _child_policy(db)
+            children = {}
+            if child_policy and _has_table(db, 'summary_embeddings'):
+                for child in db.execute('SELECT e.* FROM summary_embeddings AS e JOIN units ON units.id=e.unit_id'
+                                        + where + ' ORDER BY e.unit_id,e.seq', values):
+                    children.setdefault(child['unit_id'], []).append(dict(child))
         for row in rows:
             row['metadata'] = json.loads(row['metadata'])
             row['summary_vector'] = json.loads(row['summary_vector'])
+            if child_policy:
+                spans = children.get(row['id'], [])
+                row['summary_search_vectors'] = [json.loads(child['vector']) for child in spans]
+                row['summary_embedding_spans'] = [{key: child[key] for key in ('seq', 'start', 'end')} for child in spans]
         return rows
 
     def units(self):
@@ -135,8 +203,22 @@ class Store:
         with self.connect() as db:
             rows = [dict(r) for r in db.execute(
                 "SELECT c.* FROM chunks AS c JOIN units AS u ON u.id=c.unit_id" + where + " ORDER BY c.unit_id,c.seq", values)]
+            child_policy, children, details = _child_policy(db), {}, {}
+            if child_policy and _has_table(db, 'chunk_embeddings'):
+                for child in db.execute('SELECT e.* FROM chunk_embeddings AS e JOIN chunks AS c ON c.id=e.chunk_id '
+                                        'JOIN units AS u ON u.id=c.unit_id' + where + ' ORDER BY e.chunk_id,e.seq', values):
+                    children.setdefault(child['chunk_id'], []).append(dict(child))
+            if child_policy and _has_table(db, 'chunk_details'):
+                details = {row['chunk_id']: json.loads(row['value']) for row in db.execute(
+                    'SELECT d.* FROM chunk_details AS d JOIN chunks AS c ON c.id=d.chunk_id '
+                    'JOIN units AS u ON u.id=c.unit_id' + where, values)}
         for row in rows:
             row['vector'] = json.loads(row['vector'])
+            if child_policy:
+                spans = children.get(row['id'], [])
+                row['search_vectors'] = [json.loads(child['vector']) for child in spans]
+                row['embedding_spans'] = [{key: child[key] for key in ('seq', 'start', 'end')} for child in spans]
+                row.update(details.get(row['id'], {}))
         return rows
 
     def chunks(self):
@@ -166,6 +248,34 @@ def _source_filter(identifiers, alias):
     if identifiers is None:
         return '', ()
     return f" WHERE {alias}.source_id IN ({','.join('?' for _ in identifiers)})", tuple(identifiers)
+
+
+def _has_table(db, name):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+
+
+def _child_policy(db):
+    row = db.execute("SELECT value FROM meta WHERE key='embedding'").fetchone()
+    return bool(row and json.loads(row[0]).get('retrieval_pooling') == 'max-child-cosine-v1')
+
+
+def _validate_children(vectors, spans, start, end):
+    if not isinstance(vectors, list) or not isinstance(spans, list) or not vectors or len(vectors) != len(spans):
+        raise ValueError('New passages/summaries require paired nonempty child embeddings and spans')
+    dimensions, covered, previous_start = set(), start, start - 1
+    for index, (values, span) in enumerate(zip(vectors, spans)):
+        if (not isinstance(span, dict) or span.get('seq') != index or
+                type(span.get('start')) is not int or type(span.get('end')) is not int or
+                not start <= span['start'] < span['end'] <= end or
+                span['start'] > covered or span['start'] <= previous_start or span['end'] <= covered):
+            raise ValueError('Child embedding spans must cover their complete parent in source order')
+        dimensions.add(len(vector(values)))
+        if not math.isclose(math.hypot(*values), 1.0, rel_tol=0.0, abs_tol=1e-6):
+            raise ValueError('Child embedding vectors must be normalized before storage')
+        covered, previous_start = span['end'], span['start']
+    if covered != end:
+        raise ValueError('Child embeddings do not cover the complete parent')
+    return dimensions
 
 
 def _resolve_sources(catalog, identifiers):

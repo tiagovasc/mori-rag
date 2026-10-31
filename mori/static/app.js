@@ -3,6 +3,8 @@ const $=id=>document.getElementById(id);
 const labels={retrieval_k:'Semantic candidates',jev_k:'Jev shortlist',final_passages:'Final passages (no reranker)',full_units:'Complete source units',summaries:'Other source summaries',min_relevance:'Minimum passage relevance',summary_min_relevance:'Minimum summary relevance',summary_candidates:'Summary candidate cap (0 = all)',rerank_k:'Final passages with reranker',rating_neighbors:'Neighbors shown to Jev',answer_neighbors:'Neighbors in answer packet'};
 let defaults={},current=null,busy=false,polling=false,readingVersion=0,loadingRun=false,serverBusy=false;
 let sources=[],selectedSources=new Set(),sourcesReady=false,selectionInitialized=false,selectAllSources=true,allowUploads=false;
+let llmEnabled=false,modelOptions=[],selectedModel=null,modelCatalogKey=null;
+let budgetOverhead=1024;
 let lastJob=null,jobKey=null,progressSuppressed=false,lastStateAt=0,localStartedAt=null,localFinishedAt=null,connectionLost=false,historyLoading=false;
 const sourceParams=globalThis.location?new URLSearchParams(globalThis.location.search):null;
 const requestedSources=sourceParams?.has('sources')?sourceParams.getAll('sources'):null;
@@ -87,15 +89,64 @@ async function api(path,data){
  }catch(e){if(e.name==='AbortError')throw Error('The server took too long to respond');throw e;}
  finally{if(timer!==null)clearTimeout(timer);}
 }
-function settings(){const result={};for(const key of Object.keys(labels))result[key]=Number($(key).value);result.rerank_enabled=$('rerank_enabled').checked;result.exclude_full_unit_passages=$('exclude_full_unit_passages').checked;return result;}
+function modelError(){return llmEnabled&&selectedModel&&!modelOptions.includes(selectedModel)?`The selected model (${selectedModel}) is unavailable. Open Settings and choose an available model.`:'';}
+function syncModels(providers){
+ llmEnabled=providers.llm!=='none';
+ const configured=typeof providers.model==='string'?providers.model:'';
+ modelOptions=[...new Set([configured,...(Array.isArray(providers.models)?providers.models:[])].filter(model=>typeof model==='string'&&model.length))];
+ if(selectedModel===null||!selectedModel)selectedModel=configured;
+ const key=JSON.stringify([llmEnabled,configured,modelOptions,modelError()]);
+ if(key!==modelCatalogKey){
+  modelCatalogKey=key;const select=$('llm_model');select.replaceChildren();
+  const option=(value,label,disabled=false)=>{const item=document.createElement('option');item.value=value;item.textContent=label;item.disabled=disabled;select.append(item);};
+  if(!llmEnabled)option('','No LLM configured');
+  else{
+   if(!configured)option('','Provider default');
+   for(const model of modelOptions)option(model,model);
+   if(modelError())option(selectedModel,`${selectedModel} (unavailable)`,true);
+  }
+  select.value=llmEnabled?selectedModel:'';
+ }
+ $('model-help').textContent=llmEnabled?'Used for answers and optional reranking.':'An LLM has not been configured for this research room.';
+ updateControls();
+}
+$('llm_model').addEventListener('change',()=>{if(busy||serverBusy||loadingRun||!sourcesReady)return;selectedModel=$('llm_model').value;updateControls();});
+function contextMode(){return $('evidence_mode').value==='context';}
+function budgetError(){
+ if(!contextMode())return '';
+ const limit=Number($('context_window_tokens').value),output=Number($('llm_max_output_tokens').value);
+ if(!Number.isSafeInteger(limit)||limit<1||limit>2000000)return 'Choose a whole-number context window between 1 and 2,000,000 tokens.';
+ if(!Number.isSafeInteger(output)||output<1)return 'Reserve at least one whole token for the answer.';
+ return limit<=output+budgetOverhead?'The context window must leave room for evidence after the answer and overhead reserves.':'';
+}
+function updateBudgetControls(locked){
+ const context=contextMode();$('context-controls').hidden=!context;
+ for(const id of ['evidence_mode','context_window_tokens','llm_max_output_tokens'])$(id).disabled=locked;
+ for(const key of ['final_passages','rerank_k']){if($(key))$(key).disabled=locked||context;if($(key+'-field'))$(key+'-field').hidden=context;}
+ $('budget-help').textContent=context?`Reserve the complete source units and the most relevant summaries first, then fill the remaining space with whole passages from the Jev shortlist. Prompt text is included, with ${budgetOverhead.toLocaleString()} tokens reserved for provider overhead. Each UTF-8 byte counts as one token: this conservative estimate can leave substantial spare capacity. Server character limits also apply; provider usage can differ.`:'Use the passage counts below. Full units and summaries are selected separately.';
+}
+for(const id of ['evidence_mode','context_window_tokens','llm_max_output_tokens'])$(id).addEventListener(id==='evidence_mode'?'change':'input',()=>updateControls());
+function settings(){const result={};for(const key of Object.keys(labels)){if(contextMode()&&['final_passages','rerank_k'].includes(key))continue;result[key]=Number($(key).value);}result.rerank_enabled=$('rerank_enabled').checked;result.exclude_full_unit_passages=$('exclude_full_unit_passages').checked;result.evidence_mode=contextMode()?'context':'fixed';if(contextMode()){result.context_window_tokens=Number($('context_window_tokens').value);result.llm_max_output_tokens=Number($('llm_max_output_tokens').value);}if(llmEnabled&&selectedModel)result.llm_model=selectedModel;return result;}
+function renderContextUsage(budget){
+ const fields=['limit_tokens','prompt_tokens','output_reserve_tokens','overhead_reserve_tokens','remaining_tokens'];
+ const valid=budget&&budget.mode==='context'&&fields.every(key=>Number.isSafeInteger(budget[key])&&budget[key]>=0)&&budget.limit_tokens>0;
+ $('context-usage').hidden=!valid;if(!valid)return;
+ const used=budget.prompt_tokens+budget.output_reserve_tokens+budget.overhead_reserve_tokens,format=n=>n.toLocaleString();
+ $('context-progress').max=budget.limit_tokens;$('context-progress').value=Math.min(used,budget.limit_tokens);
+ $('context-usage-summary').textContent=` · ${format(used)} / ${format(budget.limit_tokens)} estimated tokens`;
+ $('context-usage-detail').textContent=`Prompt: ${format(budget.prompt_tokens)} · Answer reserve: ${format(budget.output_reserve_tokens)} · Overhead reserve: ${format(budget.overhead_reserve_tokens)} · Remaining: ${format(budget.remaining_tokens)}. ${budget.counting_note||'Conservative estimate; provider usage can differ.'}`;
+}
 function selectedAvailableSources(){return sources.filter(source=>selectedSources.has(source.id));}
 function unavailableSources(){const available=new Set(sources.map(source=>source.id));return [...selectedSources].filter(id=>!available.has(id));}
 function selectionError(){const missing=unavailableSources();return missing.length?`Unavailable sources: ${missing.map(id=>id||'(empty source ID)').join(', ')}. Open Sources and choose available sources or select all to continue.`:'';}
 function updateControls(){
- const locked=busy||serverBusy||loadingRun||!sourcesReady,selected=selectedAvailableSources(),error=selectionError();
+ const locked=busy||serverBusy||loadingRun||!sourcesReady,selected=selectedAvailableSources(),error=selectionError(),modelIssue=modelError(),budgetIssue=budgetError();
  $('composer').setAttribute('aria-busy',String(busy||serverBusy||loadingRun));
  $('source-picker').disabled=locked;
- for(const id of ['retrieve','answer','plan'])$(id).disabled=locked||!selected.length||Boolean(error);
+ for(const id of ['retrieve','answer','plan'])$(id).disabled=locked||!selected.length||Boolean(error)||Boolean(modelIssue)||Boolean(budgetIssue);
+ updateBudgetControls(locked);$('budget-error').textContent=budgetIssue;$('budget-error').hidden=!budgetIssue;
+ $('llm_model').disabled=locked||!llmEnabled||(!modelOptions.length&&!modelIssue);
+ $('model-error').textContent=modelIssue;$('model-error').hidden=!modelIssue;
  $('upload').disabled=locked||!allowUploads;
  $('sources-all').disabled=locked||!sources.length||(!error&&selected.length===sources.length);
  $('sources-none').disabled=locked||!selectedSources.size;
@@ -132,6 +183,8 @@ function querySources(){
  if(!sourcesReady)throw Error('Sources are still loading.');
  if(busy||serverBusy||loadingRun)throw Error('Wait for the current operation to finish.');
  const error=selectionError();if(error)throw Error(error);
+ const modelIssue=modelError();if(modelIssue)throw Error(modelIssue);
+ const budgetIssue=budgetError();if(budgetIssue)throw Error(budgetIssue);
  const ids=selectedAvailableSources().map(source=>source.id);if(!ids.length)throw Error('Choose at least one source.');return ids;
 }
 for(const [id,all]of [['sources-all',true],['sources-none',false]])$(id).addEventListener('click',()=>{
@@ -147,7 +200,10 @@ async function refreshHistory(){
 }
 async function refresh(){
  const s=await api('/api/state');serverBusy=s.job?.status==='running';connectionLost=false;lastStateAt=Date.now();renderProgress(s.job);
- allowUploads=s.allow_uploads===true;$('add-sources').hidden=!allowUploads;syncSources(s.sources);$('stats').textContent=`${s.stats.units} source units · ${s.stats.chunks} passages`;$('providers').textContent=s.providers.embedding==='demo'?'DEMO FIXTURE · NOT SEMANTIC':`${s.providers.embedding} embeddings · ${s.providers.llm==='none'?'evidence handoff':s.providers.llm+' answers'}`;if(!Object.keys(defaults).length){defaults=s.settings;for(const [key,label]of Object.entries(labels)){const l=document.createElement('label');l.textContent=label;const input=document.createElement('input');input.type='number';input.id=key;input.min=key.includes('relevance')||['full_units','summaries','summary_candidates','rating_neighbors','answer_neighbors'].includes(key)?'0':'1';if(key.includes('relevance'))input.max='100';input.value=defaults[key];l.append(input);$('fields').append(l);}$('rerank_enabled').checked=defaults.rerank_enabled;$('exclude_full_unit_passages').checked=defaults.exclude_full_unit_passages;}
+ syncModels(s.providers);
+ allowUploads=s.allow_uploads===true;$('add-sources').hidden=!allowUploads;syncSources(s.sources);$('stats').textContent=`${s.stats.units} source units · ${s.stats.chunks} passages`;$('providers').textContent=s.providers.embedding==='demo'?'DEMO FIXTURE · NOT SEMANTIC':`${s.providers.embedding} embeddings · ${s.providers.llm==='none'?'evidence handoff':s.providers.llm+' answers'}`;if(!Object.keys(defaults).length){defaults=s.settings;for(const [key,label]of Object.entries(labels)){const l=document.createElement('label');l.id=key+'-field';l.textContent=label;const input=document.createElement('input');input.type='number';input.id=key;input.min=key.includes('relevance')||['full_units','summaries','summary_candidates','rating_neighbors','answer_neighbors'].includes(key)?'0':'1';if(key.includes('relevance'))input.max='100';input.value=defaults[key];l.append(input);$('fields').append(l);}$('rerank_enabled').checked=defaults.rerank_enabled;$('exclude_full_unit_passages').checked=defaults.exclude_full_unit_passages;$('evidence_mode').value=defaults.evidence_mode||'fixed';$('context_window_tokens').value=defaults.context_window_tokens??100000;$('llm_max_output_tokens').value=defaults.llm_max_output_tokens??4096;}
+ if(Number.isSafeInteger(s.context_budget?.overhead_reserve_tokens))budgetOverhead=s.context_budget.overhead_reserve_tokens;
+ updateControls();
  // Slow or unavailable history must never delay the running job's progress.
  refreshHistory();return s;
 }
@@ -182,12 +238,14 @@ async function openRun(id,restoreSelection=true,followJob=false){
  renderAnswer(value.answer||'Your evidence packet is ready. Use the Model handoff tab with your preferred LLM, or configure an answer provider.');
  $('prompt').textContent=value.prompt;$('counts').replaceChildren();
  for(const [key,label]of [['full_units','complete units'],['summaries','summaries'],['passages','passages']]){const span=document.createElement('span');span.textContent=`${value.context.counts[key]} ${label}`;$('counts').append(span);}
+ renderContextUsage(value.context.context_budget);
  $('notices').textContent=value.context.notices.join('. ');$('evidence-view').replaceChildren();
  for(const [group,key]of [['full_units','text'],['summaries','summary'],['passages','target']])for(const row of value.context[group]){
   const details=document.createElement('details'),summary=document.createElement('summary'),meta=document.createElement('p'),pre=document.createElement('pre');
   details.dataset.citation=row.citation;summary.textContent=`[${row.citation}] ${row.title||row.unit.title} · ${group==='summaries'?'summary only':group==='full_units'?'complete original':'original passage'}`;
   const identity=row.unit||row;meta.textContent=`${identity.locator} · Source: ${identity.source_id} · Relevance: ${row.rating.score.toFixed(2)}/100`;
-  pre.textContent=key==='target'?row.target.text+row.neighbors.map(n=>'\n\nAdjacent context:\n'+n.text).join(''):row[key];
+  pre.textContent=key==='target'?(row.context?.text??row.target.text+row.neighbors.map(n=>'\n\nAdjacent context:\n'+n.text).join('')):row[key];
+  if(key==='target'){const words=text=>text.trim().split(/\s+/u).filter(Boolean).length;meta.textContent+=` · ${words(row.target.text)}-word passage`;if(row.context&&(row.context.start!==row.target.start||row.context.end!==row.target.end))meta.textContent+=` · ${words(row.context.text)} words with context`;}
   details.append(summary,meta,pre);$('evidence-view').append(details);
  }
  showTab(value.answer?'answer':'evidence');
@@ -208,7 +266,7 @@ for(const [id,answer]of [['retrieve',false],['answer',true]])$(id).addEventListe
   else{working(false);status(e.message);}
  }
 });
-$('plan').addEventListener('click',async()=>{if(busy||serverBusy||loadingRun)return;try{const sources=querySources();working(true);const p=await api('/api/plan',{settings:settings(),sources});status(`Up to ${p.candidate_passages} passage ratings + ${p.summary_ratings} summary ratings. Up to ${p.rating_attempt_ceiling} attempts including retries; cached decisions are reused. Final packet: ${p.full_units} complete units, ${p.summaries} summaries, up to ${p.final_passage_cap} passages. No provider calls made by this budget check.`);}catch(e){status(e.message);}finally{working(false);}});
+$('plan').addEventListener('click',async()=>{if(busy||serverBusy||loadingRun)return;try{const sources=querySources();working(true);const p=await api('/api/plan',{settings:settings(),sources});const ending=p.evidence_mode==='context'?`then whole passages that fit the ${Number(p.context_window_tokens).toLocaleString()}-token context budget, considering up to ${p.final_passage_cap} ranked passages. Final usage is calculated after ranking; answer and overhead space are reserved`:`up to ${p.final_passage_cap} passages`;status(`Up to ${p.candidate_passages} passage ratings + ${p.summary_ratings} summary ratings. Up to ${p.rating_attempt_ceiling} attempts including retries; cached decisions are reused. Final packet: ${p.full_units} complete units, ${p.summaries} summaries, ${ending}. No provider calls made by this budget check.`);}catch(e){status(e.message);}finally{working(false);}});
 function fileData(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(file);});}
 $('upload').addEventListener('click',async()=>{
  if(busy||serverBusy||loadingRun||!sourcesReady||!allowUploads)return;

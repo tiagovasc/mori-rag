@@ -31,7 +31,7 @@ class Fixture(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.store = Store(self.temp.name)
         self.config = Config(embedding='demo', embedding_model='source-selection-fixture',
-                             chunk_words=8, chunk_overlap=2, retrieval_k=30, jev_k=20,
+                             chunk_strategy='words', chunk_words=8, chunk_overlap=2, retrieval_k=30, jev_k=20,
                              final_passages=3, full_units=1, summaries=1, workers=1,
                              min_relevance=0, summary_min_relevance=0,
                              rating_neighbors=1, answer_neighbors=2).validate()

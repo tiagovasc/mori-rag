@@ -112,6 +112,120 @@ assert.equal(app.el('sources-all').disabled,true);assert.equal(app.el('add-sourc
 assert.equal(app.server.requests.filter(r=>r.path==='/api/state').length,1);
 """)
 
+    def test_model_choice_survives_refresh_and_reaches_budget_and_query(self):
+        self.run_ui(r"""
+const app=browser({state:{providers:{embedding:'demo',llm:'command',model:'model-a',models:['model-a','model-b']}}});await settle();
+assert.equal(app.el('llm_model').value,'model-a');assert.equal(app.el('llm_model').disabled,false);
+assert.deepEqual(app.el('llm_model').children.map(e=>e.value),['model-a','model-b']);
+app.el('llm_model').value='model-b';await app.el('llm_model').emit('change');
+const option=app.el('llm_model').children[0];await app.refresh();
+assert.equal(app.el('llm_model').value,'model-b');assert.equal(app.el('llm_model').children[0],option);
+await app.choose('alpha',false);await app.click('plan');
+assert.equal(queries(app)[0].body.settings.llm_model,'model-b');
+app.el('question').value='Synthetic model choice';await app.click('answer');await settle();
+assert.equal(queries(app)[1].body.settings.llm_model,'model-b');assert.deepEqual(queries(app)[1].body.sources,['beta']);
+assert.equal(app.server.state.providers.model,'model-a');
+""")
+
+    def test_model_disabled_without_provider_and_implicit_default_omits_override(self):
+        self.run_ui(r"""
+const app=browser();await settle();assert.equal(app.el('llm_model').disabled,true);
+assert.equal(app.el('llm_model').children[0].textContent,'No LLM configured');
+await app.click('plan');assert.equal('llm_model' in queries(app)[0].body.settings,false);
+const implicit=browser({state:{providers:{embedding:'demo',llm:'http',model:'',models:[]}}});await settle();
+assert.equal(implicit.el('llm_model').disabled,true);assert.equal(implicit.el('llm_model').children[0].textContent,'Provider default');
+await implicit.click('plan');assert.equal('llm_model' in queries(implicit)[0].body.settings,false);
+""")
+
+    def test_unavailable_model_blocks_submission_until_user_changes_it(self):
+        self.run_ui(r"""
+const app=browser({state:{providers:{embedding:'demo',llm:'http',model:'model-a',models:['model-a','model-b']}}});await settle();
+app.el('llm_model').value='model-b';await app.el('llm_model').emit('change');
+app.server.state.providers.models=['model-a'];await app.refresh();
+assertQueryDisabled(app,true);assert.equal(app.el('model-error').hidden,false);
+assert.match(app.el('model-error').textContent,/model-b.*unavailable/);assert.equal(app.el('llm_model').value,'model-b');
+await app.click('answer');assert.equal(queries(app).length,0);
+app.el('llm_model').value='model-a';await app.el('llm_model').emit('change');assertQueryDisabled(app,false);
+await app.refresh();assert.equal(app.el('model-error').hidden,true);assert.equal(app.el('llm_model').value,'model-a');
+""")
+
+    def test_model_cannot_change_during_running_request(self):
+        self.run_ui(r"""
+const app=browser({state:{providers:{embedding:'demo',llm:'command',model:'model-a',models:['model-a','model-b']}}});await settle();
+const gate=deferred();app.server.plan=()=>gate.promise;
+const pending=app.click('plan');assert.equal(app.el('llm_model').disabled,true);
+app.el('llm_model').value='model-b';await app.el('llm_model').emit('change');
+assert.equal(app.eval('selectedModel'),'model-a');
+gate.resolve(app.server.plan);await pending;assert.equal(app.el('llm_model').disabled,false);
+app.server.state.job={status:'running'};await app.refresh();assert.equal(app.el('llm_model').disabled,true);
+""")
+
+    def test_removed_last_model_can_return_to_implicit_provider_default(self):
+        self.run_ui(r"""
+const app=browser({state:{providers:{embedding:'demo',llm:'http',model:'',models:['model-b']}}});await settle();
+app.el('llm_model').value='model-b';await app.el('llm_model').emit('change');
+app.server.state.providers.models=[];await app.refresh();assertQueryDisabled(app,true);
+assert.equal(app.el('llm_model').disabled,false);
+assert.equal(app.el('llm_model').children[0].textContent,'Provider default');
+app.el('llm_model').value='';await app.el('llm_model').emit('change');await app.refresh();
+assertQueryDisabled(app,false);assert.equal(app.el('model-error').hidden,true);
+await app.click('plan');assert.equal('llm_model' in queries(app)[0].body.settings,false);
+""")
+
+    def test_context_mode_preserves_counts_and_sends_budget_to_plan_and_query(self):
+        self.run_ui(r"""
+const app=browser();await settle();
+assert.equal(app.el('evidence_mode').value,'fixed');assert.equal(app.el('context-controls').hidden,true);
+app.el('final_passages').value='13';app.el('rerank_k').value='7';
+app.el('evidence_mode').value='context';await app.el('evidence_mode').emit('change');
+assert.equal(app.el('context-controls').hidden,false);assert.equal(app.el('context_window_tokens').value,100000);
+assert.equal(app.el('final_passages-field').hidden,true);assert.equal(app.el('rerank_k').disabled,true);
+assert.equal(app.el('summaries').value,5);assert.equal(app.el('full_units').value,1);
+app.el('context_window_tokens').value='90000';app.el('llm_max_output_tokens').value='3000';
+await app.refresh();assert.equal(app.el('context_window_tokens').value,'90000');assert.equal(app.el('evidence_mode').value,'context');
+app.server.plan={...app.server.plan,evidence_mode:'context',context_window_tokens:90000,final_passage_cap:100};
+await app.click('plan');assert.equal(queries(app)[0].body.settings.context_window_tokens,90000);
+assert.equal(queries(app)[0].body.settings.llm_max_output_tokens,3000);assert.equal(queries(app)[0].body.settings.evidence_mode,'context');
+assert.equal('final_passages' in queries(app)[0].body.settings,false);assert.equal('rerank_k' in queries(app)[0].body.settings,false);
+assert.match(app.el('status').textContent,/90,000-token context budget/);assert.match(app.el('status').textContent,/100 ranked passages/);
+await app.click('retrieve');await settle();assert.equal(queries(app)[1].body.settings.evidence_mode,'context');
+app.el('evidence_mode').value='fixed';await app.el('evidence_mode').emit('change');
+assert.equal(app.el('final_passages-field').hidden,false);assert.equal(app.el('final_passages').value,'13');
+assert.equal(app.el('rerank_k').value,'7');assert.equal(app.el('context-controls').hidden,true);
+await app.click('plan');assert.equal(queries(app)[2].body.settings.final_passages,13);
+assert.equal('context_window_tokens' in queries(app)[2].body.settings,false);
+assert.equal('llm_max_output_tokens' in queries(app)[2].body.settings,false);
+""")
+
+    def test_context_budget_validation_and_busy_controls(self):
+        self.run_ui(r"""
+const app=browser({state:{context_budget:{overhead_reserve_tokens:2048}}});await settle();
+app.el('evidence_mode').value='context';await app.el('evidence_mode').emit('change');
+assert.match(app.el('budget-help').textContent,/2,048 tokens reserved/);
+for(const value of ['',0,1.5,2000001]){app.el('context_window_tokens').value=String(value);await app.el('context_window_tokens').emit('input');assertQueryDisabled(app,true);}
+app.el('context_window_tokens').value='6000';await app.el('context_window_tokens').emit('input');
+assert.match(app.el('budget-error').textContent,/leave room/);await app.click('answer');assert.equal(queries(app).length,0);
+app.el('context_window_tokens').value='100000';app.el('llm_max_output_tokens').value='-1';await app.el('llm_max_output_tokens').emit('input');assertQueryDisabled(app,true);
+app.el('llm_max_output_tokens').value='4096';await app.el('llm_max_output_tokens').emit('input');assertQueryDisabled(app,false);
+const gate=deferred();app.server.plan=()=>gate.promise;const pending=app.click('plan');
+for(const id of ['evidence_mode','context_window_tokens','llm_max_output_tokens'])assert.equal(app.el(id).disabled,true);
+gate.resolve({error:'Synthetic plan error'});await pending;assert.equal(app.el('evidence_mode').disabled,false);
+app.server.state.job={status:'running'};await app.refresh();assert.equal(app.el('evidence_mode').disabled,true);
+""")
+
+    def test_saved_context_budget_is_visible_and_legacy_runs_clear_it(self):
+        self.run_ui(r"""
+const app=browser();await settle();app.server.runReplies.budget=packet('Budget',[alpha]);
+app.server.runReplies.budget.context.context_budget={mode:'context',limit_tokens:100000,prompt_tokens:80000,output_reserve_tokens:4096,overhead_reserve_tokens:1024,remaining_tokens:14880,counting_note:'Conservative estimate; provider usage can differ.'};
+await app.openRun('budget');assert.equal(app.el('context-usage').hidden,false);
+assert.equal(app.el('context-progress').max,100000);assert.equal(app.el('context-progress').value,85120);
+assert.match(app.el('context-usage-summary').textContent,/85,120 \/ 100,000 estimated tokens/);
+assert.match(app.el('context-usage-detail').textContent,/Remaining: 14,880/);
+app.server.runReplies.old=packet('Old',[alpha]);await app.openRun('old');assert.equal(app.el('context-usage').hidden,true);
+app.server.runReplies.bad=packet('Bad',[alpha]);app.server.runReplies.bad.context.context_budget={mode:'context',limit_tokens:0,prompt_tokens:-1};
+await app.openRun('bad');assert.equal(app.el('context-usage').hidden,true);
+""")
+
     def test_no_selection_blocks_requests_and_bodies_use_checked_sources(self):
         self.run_ui(r"""
 const app=browser();await settle();
@@ -409,6 +523,18 @@ class SourceMarkupTests(unittest.TestCase):
         self.assertIn('source-summary', parsed.elements['source-picker'][1]['aria-describedby'])
         self.assertLess(html.index('id="composer"'), html.index('id="source-picker"'))
         self.assertLess(html.index('id="source-picker"'), html.index('id="settings"'))
+        settings_menu = html.split('<details id="settings">', 1)[1].split('</details>', 1)[0]
+        self.assertIn('<summary>Settings</summary>', settings_menu)
+        self.assertIn('<label for="llm_model">LLM model</label>', settings_menu)
+        self.assertIn('id="llm_model"', settings_menu)
+        self.assertEqual(parsed.elements['llm_model'][0], 'select')
+        self.assertEqual(parsed.elements['llm_model'][1]['aria-describedby'], 'model-help model-error')
+        self.assertIn('id="evidence_mode"', settings_menu)
+        self.assertIn('id="context_window_tokens"', settings_menu)
+        self.assertEqual(parsed.elements['evidence_mode'][0], 'select')
+        self.assertEqual(parsed.elements['budget-error'][1]['role'], 'alert')
+        self.assertEqual(parsed.elements['context-progress'][0], 'progress')
+        self.assertEqual(parsed.elements['context-progress'][1]['aria-describedby'], 'context-usage-detail')
         for name in ('sources-all', 'sources-none'):
             self.assertEqual(parsed.elements[name][1]['type'], 'button')
         self.assertIn('hidden', parsed.elements['add-sources'][1])

@@ -51,7 +51,7 @@ class MoriTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=base)
         self.addCleanup(self.temp.cleanup)
         self.store = Store(self.temp.name)
-        self.config = Config(embedding='demo', embedding_model='test-fixture-v1', chunk_words=40, chunk_overlap=8,
+        self.config = Config(embedding='demo', embedding_model='test-fixture-v1', chunk_strategy='words', chunk_words=40, chunk_overlap=8,
                              min_relevance=0, summary_min_relevance=0).validate()
         self.embeddings = Embeddings(self.config)
         self.units = load_file(ROOT / 'examples/corpus.jsonl')
@@ -66,7 +66,7 @@ class MoriTests(unittest.TestCase):
 
     def test_default_counts_and_reranker_off(self):
         default = Config()
-        self.assertEqual((default.retrieval_k, default.jev_k, default.final_passages, default.full_units, default.summaries), (500, 100, 100, 1, 5))
+        self.assertEqual((default.retrieval_k, default.jev_k, default.final_passages, default.full_units, default.summaries), (500, 100, 20, 1, 5))
         writer = Writer()
         result = self.run_query(llm=writer)
         self.assertEqual(writer.calls, [])
@@ -158,6 +158,7 @@ class MoriTests(unittest.TestCase):
                 self.run_query()
 
     def test_shortfalls_are_disclosed_not_padded(self):
+        self.config.final_passages = 100
         packet = self.packet(self.run_query())
         self.assertTrue(packet['notices'])
         self.assertLess(packet['counts']['passages'], 100)
@@ -374,7 +375,7 @@ class MoriTests(unittest.TestCase):
         self.assertEqual(output.read_bytes(), original)
 
     def test_500_to_100_to_20_mechanics(self):
-        config = dataclasses.replace(self.config, chunk_words=8, chunk_overlap=0, full_units=1, summaries=5)
+        config = dataclasses.replace(self.config, chunk_words=8, chunk_overlap=0, full_units=1, summaries=5, final_passages=100)
         store = Store(Path(self.temp.name) / 'large-fixture')
         units = []
         for i in range(12):
