@@ -5,10 +5,12 @@ let defaults={},current=null,busy=false,polling=false,readingVersion=0,loadingRu
 let sources=[],selectedSources=new Set(),sourcesReady=false,selectionInitialized=false,selectAllSources=true,allowUploads=false;
 let llmEnabled=false,modelOptions=[],selectedModel=null,modelCatalogKey=null;
 let budgetOverhead=1024;
+let promptExtension=false;
 let lastJob=null,jobKey=null,progressSuppressed=false,lastStateAt=0,localStartedAt=null,localFinishedAt=null,connectionLost=false,historyLoading=false;
 const sourceParams=globalThis.location?new URLSearchParams(globalThis.location.search):null;
 const requestedSources=sourceParams?.has('sources')?sourceParams.getAll('sources'):null;
 function status(text){$('status').textContent=text;}
+function extensionPreview(p){return ` Prompt extension: ${p.expansion_model_calls??0} extra model calls; at most ${p.maximum_query_embeddings??1} query embeddings. This applies to evidence-only inquiries too.`;}
 function textIfChanged(element,text){if(element.textContent!==text)element.textContent=text;}
 function validDate(value){const time=typeof value==='string'?Date.parse(value):NaN;return Number.isFinite(time)?time:null;}
 function duration(milliseconds){const seconds=Math.max(0,Math.floor(milliseconds/1000));return seconds<60?`${seconds}s`:`${Math.floor(seconds/60)}m ${seconds%60}s`;}
@@ -90,6 +92,8 @@ async function api(path,data){
  finally{if(timer!==null)clearTimeout(timer);}
 }
 function modelError(){return llmEnabled&&selectedModel&&!modelOptions.includes(selectedModel)?`The selected model (${selectedModel}) is unavailable. Open Settings and choose an available model.`:'';}
+function extensionError(){return promptExtension&&!llmEnabled?'Prompt extension requires a configured LLM. Turn it off to continue.':'';}
+$('query_expansion').addEventListener('change',()=>{if(busy||serverBusy||loadingRun||!sourcesReady||(!llmEnabled&&$('query_expansion').checked)){$('query_expansion').checked=promptExtension;return;}promptExtension=$('query_expansion').checked;updateControls();});
 function syncModels(providers){
  llmEnabled=providers.llm!=='none';
  const configured=typeof providers.model==='string'?providers.model:'';
@@ -126,7 +130,7 @@ function updateBudgetControls(locked){
  $('budget-help').textContent=context?`Reserve the complete source units and the most relevant summaries first, then fill the remaining space with whole passages from the Jev shortlist. Prompt text is included, with ${budgetOverhead.toLocaleString()} tokens reserved for provider overhead. Each UTF-8 byte counts as one token: this conservative estimate can leave substantial spare capacity. Server character limits also apply; provider usage can differ.`:'Use the passage counts below. Full units and summaries are selected separately.';
 }
 for(const id of ['evidence_mode','context_window_tokens','llm_max_output_tokens'])$(id).addEventListener(id==='evidence_mode'?'change':'input',()=>updateControls());
-function settings(){const result={};for(const key of Object.keys(labels)){if(contextMode()&&['final_passages','rerank_k'].includes(key))continue;result[key]=Number($(key).value);}result.rerank_enabled=$('rerank_enabled').checked;result.exclude_full_unit_passages=$('exclude_full_unit_passages').checked;result.evidence_mode=contextMode()?'context':'fixed';if(contextMode()){result.context_window_tokens=Number($('context_window_tokens').value);result.llm_max_output_tokens=Number($('llm_max_output_tokens').value);}if(llmEnabled&&selectedModel)result.llm_model=selectedModel;return result;}
+function settings(){const result={query_expansion:promptExtension};for(const key of Object.keys(labels)){if(contextMode()&&['final_passages','rerank_k'].includes(key))continue;result[key]=Number($(key).value);}result.rerank_enabled=$('rerank_enabled').checked;result.exclude_full_unit_passages=$('exclude_full_unit_passages').checked;result.evidence_mode=contextMode()?'context':'fixed';if(contextMode()){result.context_window_tokens=Number($('context_window_tokens').value);result.llm_max_output_tokens=Number($('llm_max_output_tokens').value);}if(llmEnabled&&selectedModel)result.llm_model=selectedModel;return result;}
 function renderContextUsage(budget){
  const fields=['limit_tokens','prompt_tokens','output_reserve_tokens','overhead_reserve_tokens','remaining_tokens'];
  const valid=budget&&budget.mode==='context'&&fields.every(key=>Number.isSafeInteger(budget[key])&&budget[key]>=0)&&budget.limit_tokens>0;
@@ -136,11 +140,23 @@ function renderContextUsage(budget){
  $('context-usage-summary').textContent=` · ${format(used)} / ${format(budget.limit_tokens)} estimated tokens`;
  $('context-usage-detail').textContent=`Prompt: ${format(budget.prompt_tokens)} · Answer reserve: ${format(budget.output_reserve_tokens)} · Overhead reserve: ${format(budget.overhead_reserve_tokens)} · Remaining: ${format(budget.remaining_tokens)}. ${budget.counting_note||'Conservative estimate; provider usage can differ.'}`;
 }
+function renderSearchPhrasings(rows){
+ const panel=$('search-phrasings'),list=$('search-phrasing-list');list.replaceChildren();panel.open=false;panel.hidden=true;
+ if(!Array.isArray(rows)||rows.length>5)return;
+ const names={original:'Original question',improved:'Clearer restatement',specific:'Specific detail',broad:'Related concepts',hypothetical_answer:'Hypothetical answer · search hint only'};
+ for(const row of rows){
+  if(!row||!Object.hasOwn(names,row.kind)||typeof row.text!=='string'||!row.text.trim()||row.text.length>4000)continue;
+  const item=document.createElement('li'),label=document.createElement('strong'),text=document.createElement('p');
+  label.textContent=names[row.kind];text.textContent=row.text;item.append(label,text);list.append(item);
+ }
+ panel.hidden=!list.children.length;
+}
 function selectedAvailableSources(){return sources.filter(source=>selectedSources.has(source.id));}
 function unavailableSources(){const available=new Set(sources.map(source=>source.id));return [...selectedSources].filter(id=>!available.has(id));}
 function selectionError(){const missing=unavailableSources();return missing.length?`Unavailable sources: ${missing.map(id=>id||'(empty source ID)').join(', ')}. Open Sources and choose available sources or select all to continue.`:'';}
 function updateControls(){
- const locked=busy||serverBusy||loadingRun||!sourcesReady,selected=selectedAvailableSources(),error=selectionError(),modelIssue=modelError(),budgetIssue=budgetError();
+ const locked=busy||serverBusy||loadingRun||!sourcesReady,selected=selectedAvailableSources(),error=selectionError(),modelIssue=modelError()||extensionError(),budgetIssue=budgetError();
+ $('query_expansion').checked=promptExtension;$('query_expansion').disabled=locked||(!llmEnabled&&!promptExtension);
  $('composer').setAttribute('aria-busy',String(busy||serverBusy||loadingRun));
  $('source-picker').disabled=locked;
  for(const id of ['retrieve','answer','plan'])$(id).disabled=locked||!selected.length||Boolean(error)||Boolean(modelIssue)||Boolean(budgetIssue);
@@ -239,6 +255,7 @@ async function openRun(id,restoreSelection=true,followJob=false){
  $('prompt').textContent=value.prompt;$('counts').replaceChildren();
  for(const [key,label]of [['full_units','complete units'],['summaries','summaries'],['passages','passages']]){const span=document.createElement('span');span.textContent=`${value.context.counts[key]} ${label}`;$('counts').append(span);}
  renderContextUsage(value.context.context_budget);
+ renderSearchPhrasings(value.search_phrasings);
  $('notices').textContent=value.context.notices.join('. ');$('evidence-view').replaceChildren();
  for(const [group,key]of [['full_units','text'],['summaries','summary'],['passages','target']])for(const row of value.context[group]){
   const details=document.createElement('details'),summary=document.createElement('summary'),meta=document.createElement('p'),pre=document.createElement('pre');
@@ -266,7 +283,7 @@ for(const [id,answer]of [['retrieve',false],['answer',true]])$(id).addEventListe
   else{working(false);status(e.message);}
  }
 });
-$('plan').addEventListener('click',async()=>{if(busy||serverBusy||loadingRun)return;try{const sources=querySources();working(true);const p=await api('/api/plan',{settings:settings(),sources});const ending=p.evidence_mode==='context'?`then whole passages that fit the ${Number(p.context_window_tokens).toLocaleString()}-token context budget, considering up to ${p.final_passage_cap} ranked passages. Final usage is calculated after ranking; answer and overhead space are reserved`:`up to ${p.final_passage_cap} passages`;status(`Up to ${p.candidate_passages} passage ratings + ${p.summary_ratings} summary ratings. Up to ${p.rating_attempt_ceiling} attempts including retries; cached decisions are reused. Final packet: ${p.full_units} complete units, ${p.summaries} summaries, ${ending}. No provider calls made by this budget check.`);}catch(e){status(e.message);}finally{working(false);}});
+$('plan').addEventListener('click',async()=>{if(busy||serverBusy||loadingRun)return;try{const sources=querySources();working(true);const p=await api('/api/plan',{settings:settings(),sources});const ending=p.evidence_mode==='context'?`then whole passages that fit the ${Number(p.context_window_tokens).toLocaleString()}-token context budget, considering up to ${p.final_passage_cap} ranked passages. Final usage is calculated after ranking; answer and overhead space are reserved`:`up to ${p.final_passage_cap} passages`;status(`Up to ${p.candidate_passages} passage ratings + ${p.summary_ratings} summary ratings. Up to ${p.rating_attempt_ceiling} attempts including retries; cached decisions are reused. Final packet: ${p.full_units} complete units, ${p.summaries} summaries, ${ending}. ${extensionPreview(p)} No provider calls made by this budget check.`);}catch(e){status(e.message);}finally{working(false);}});
 function fileData(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(file);});}
 $('upload').addEventListener('click',async()=>{
  if(busy||serverBusy||loadingRun||!sourcesReady||!allowUploads)return;

@@ -276,16 +276,19 @@ class LLM:
             raise ValueError("LLM input budget exceeded; no content was truncated")
         if self.c.llm == 'none':
             raise ValueError("Configure an LLM provider or use the evidence packet for a manual answer handoff")
+        model = self.c.llm_model
+        if task == 'query_expansion' and self.c.query_expansion_model:
+            model = self.c.query_expansion_model
         if self.c.llm == 'http':
             result = http_json(self.c.llm_url,
-                {"model": self.c.llm_model, "messages": [{"role": "user", "content": prompt}],
+                {"model": model, "messages": [{"role": "user", "content": prompt}],
                  "max_tokens": self.c.llm_max_output_tokens}, os.environ.get(self.c.llm_key_env, ''),
                 self.c.timeout, 0, max_bytes=max(self.c.request_max_bytes, self.c.llm_max_input_chars * 6))
             if result['choices'][0].get('finish_reason') == 'length':
                 raise ValueError("LLM output truncated; increase output allowance and retry explicitly")
             text = result['choices'][0]['message']['content']
         else:
-            packet = json.dumps({"task": task, "prompt": prompt, "model": self.c.llm_model})
+            packet = json.dumps({"task": task, "prompt": prompt, "model": model})
             # User-trusted config only; no source text is ever interpolated into command arguments.
             try:
                 result = subprocess.run(self.c.llm_command, input=packet, text=True, encoding='utf-8',

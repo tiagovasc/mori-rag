@@ -88,10 +88,11 @@ class PipelineProgressTests(Fixture):
         self.config.rerank_enabled = True
         snapshots = []
         self.run_query(scorer=Scorer(), llm=Writer(), answer=True, progress=snapshots.append)
-        self.assertTrue(all(row['status'] == 'complete' for row in snapshots[-1]['steps']))
+        self.assertTrue(all(row['status'] == ('skipped' if row['id'] == 'query_expansion' else 'complete')
+                            for row in snapshots[-1]['steps']))
         self.assertEqual(steps(snapshots[-1])['rate_summaries']['completed'], 3)
         active = [s['current_stage'] for s in snapshots if s['current_stage']]
-        self.assertEqual(list(dict.fromkeys(active)), [key for key, _ in QUERY_STEPS])
+        self.assertEqual(list(dict.fromkeys(active)), [key for key, _ in QUERY_STEPS if key != 'query_expansion'])
 
     def test_counts_follow_completed_futures_while_first_submission_is_blocked(self):
         first_started, release_first, increment_seen = threading.Event(), threading.Event(), threading.Event()

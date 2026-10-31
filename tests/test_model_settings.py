@@ -3,6 +3,8 @@ import json
 import re
 import threading
 import time
+import tempfile
+from pathlib import Path
 import unittest
 import urllib.error
 import urllib.request
@@ -10,10 +12,46 @@ from unittest.mock import Mock, patch
 
 from mori.config import Config
 from mori.providers import LLM
-from mori.web import create_server
+from mori.web import create_server, saved_search_phrasings
 
 
 class ModelConfigurationTests(unittest.TestCase):
+    def test_saved_search_phrasings_expose_only_bounded_active_hints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(saved_search_phrasings(root, 'question'), [])
+            path = root / 'query_expansion.json'
+            variants = [{'kind': 'original', 'text': 'question'}, {'kind': 'broad', 'text': 'related'}]
+            def save(value):
+                path.write_text(json.dumps(value), encoding='utf-8')
+            save({'status': 'partial', 'variants': variants,
+                  'attempted_variants': [{'kind': 'specific', 'text': 'private failure'}], 'error': 'private'})
+            self.assertEqual(saved_search_phrasings(root, 'question'), variants)
+            save({'status': 'disabled', 'variants': variants})
+            self.assertEqual(saved_search_phrasings(root, 'question'), [])
+            for invalid in ([{'kind': 'unknown', 'text': 'bad'}],
+                            [{'kind': 'specific', 'text': 'x' * 4001}],
+                            [{'kind': [], 'text': 'bad'}]):
+                save({'status': 'complete', 'variants': variants[:1] + invalid})
+                self.assertEqual(saved_search_phrasings(root, 'question'), variants[:1])
+            save({'status': 'complete', 'variants': variants * 3})
+            self.assertEqual(saved_search_phrasings(root, 'question'), [])
+            path.write_text('{broken', encoding='utf-8')
+            self.assertEqual(saved_search_phrasings(root, 'question'), [])
+
+    def test_prompt_extension_is_strict_opt_in(self):
+        self.assertIs(Config().validate().query_expansion, False)
+        for invalid in (1, 0, 'true', None, [], {}):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'boolean'):
+                Config(query_expansion=invalid).validate()
+        with self.assertRaisesRegex(ValueError, 'configured LLM'):
+            Config(query_expansion=True).validate()
+        self.assertTrue(Config(llm='http', query_expansion=True).validate().query_expansion)
+        for invalid in ('bad model', 'bad\n', 'x' * 257):
+            with self.assertRaises(ValueError):
+                Config(query_expansion_model=invalid).validate()
+        self.assertFalse(Config(query_expansion_model='gpt-6.1-sol').validate().query_expansion)
+
     def test_default_is_included_and_catalog_order_is_preserved(self):
         config = Config(llm_model='fixture-default', llm_models=['fixture-other', 'fixture-default']).validate()
         self.assertEqual(config.available_llm_models(), ['fixture-default', 'fixture-other'])
@@ -33,6 +71,31 @@ class ModelConfigurationTests(unittest.TestCase):
 
 
 class ModelWebTests(unittest.TestCase):
+    def test_prompt_extension_request_isolation_and_unpaid_plan(self):
+        self.start_server(Config(embedding='demo', llm='http'))
+        self.assertIs(self.state()['settings']['query_expansion'], False)
+        self.assertEqual(self.request('/api/plan', {'settings': {'query_expansion': True}})[0], 200)
+        self.assertTrue(self.plan_mock.call_args.args[1].query_expansion)
+        self.http_mock.assert_not_called()
+        self.embedding_mock.assert_not_called()
+        self.assertEqual(self.request('/api/query', {'question': 'Synthetic', 'settings': {'query_expansion': True}})[0], 202)
+        self.wait_for_query()
+        self.assertTrue(self.query_mock.call_args.args[2].query_expansion)
+        self.assertIs(self.state()['settings']['query_expansion'], False)
+        for invalid in (1, 'true', None):
+            for path in ('/api/query', '/api/plan'):
+                self.assertEqual(self.request(path, {'question': 'Synthetic', 'settings': {'query_expansion': invalid}})[0], 400)
+        self.assertEqual(self.request('/api/plan', {'settings': {'query_expansion_model': 'untrusted'}})[0], 400)
+
+    def test_prompt_extension_cannot_enable_without_provider(self):
+        self.start_server(Config(embedding='demo'))
+        for path in ('/api/query', '/api/plan'):
+            code, body = self.request(path, {'question': 'Synthetic', 'settings': {'query_expansion': True}})
+            self.assertEqual(code, 400)
+            self.assertIn('configured LLM', body.decode())
+        self.plan_mock.assert_not_called()
+        self.query_mock.assert_not_called()
+
     def start_server(self, config):
         store = Mock()
         store.stats.return_value = {'units': 0, 'chunks': 0}

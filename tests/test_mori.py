@@ -256,6 +256,27 @@ class MoriTests(unittest.TestCase):
         with patch('mori.providers.http_json', return_value=response):
             self.assertEqual(Embeddings(config).encode(['text']), [[1.0, 0.0]])
 
+    def test_extension_model_is_scoped_to_retrieval_for_both_llm_transports(self):
+        for backend in ('http', 'command'):
+            with self.subTest(backend=backend):
+                config = dataclasses.replace(self.config, llm=backend, llm_model='answer-model',
+                                             query_expansion_model='search-model')
+                if backend == 'http':
+                    response = {'choices': [{'message': {'content': 'ok'}}]}
+                    transport = patch('mori.providers.http_json', return_value=response)
+                else:
+                    transport = patch('mori.providers.subprocess.run')
+                with transport as call:
+                    if backend == 'command':
+                        call.return_value.returncode = 0
+                        call.return_value.stdout = '{"text":"ok"}'
+                    llm = LLM(config)
+                    for task in ('query_expansion', 'rerank', 'answer'):
+                        self.assertEqual(llm.complete(task, 'Synthetic question'), 'ok')
+                    models = [(item.args[1] if backend == 'http' else json.loads(item.kwargs['input']))['model']
+                              for item in call.call_args_list]
+                    self.assertEqual(models, ['search-model', 'answer-model', 'answer-model'])
+
     def test_provider_redirects_never_forward_secrets_or_source_data(self):
         # Exercise urllib's real redirect handling with an in-memory transport.
         # No listener, provider connection or real credential is involved.

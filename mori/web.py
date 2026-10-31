@@ -16,11 +16,40 @@ from .ingest import ingest, load_file
 from .pipeline import plan, query
 from .providers import Embeddings, LLM
 from .progress import Progress, UPLOAD_STEPS
+from .query_expansion import KINDS, MAX_VARIANT_CHARS
 
 UI_FIELDS = {'retrieval_k', 'jev_k', 'final_passages', 'full_units', 'summaries', 'min_relevance',
              'summary_min_relevance', 'summary_candidates', 'rerank_enabled', 'rerank_k',
              'rating_neighbors', 'answer_neighbors', 'exclude_full_unit_passages', 'llm_model',
-             'evidence_mode', 'context_window_tokens', 'llm_max_output_tokens'}
+             'evidence_mode', 'context_window_tokens', 'llm_max_output_tokens', 'query_expansion'}
+
+
+def saved_search_phrasings(run, question):
+    """Expose only bounded active retrieval hints, never provider diagnostics."""
+    try:
+        path = run / 'query_expansion.json'
+        if path.stat().st_size > 256000:
+            return []
+        saved = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, UnicodeError):
+        return []
+    if not isinstance(saved, dict) or saved.get('status') not in ('complete', 'partial', 'fallback'):
+        return []
+    variants = saved.get('variants')
+    if not isinstance(variants, list) or not 1 <= len(variants) <= 5:
+        return []
+    result, seen = [], set()
+    for item in variants:
+        if not isinstance(item, dict):
+            continue
+        kind, text = item.get('kind'), item.get('text')
+        if (not isinstance(kind, str) or kind not in ('original', *KINDS) or kind in seen
+                or not isinstance(text, str) or not text.strip() or len(text) > MAX_VARIANT_CHARS
+                or (kind == 'original' and text != question)):
+            continue
+        seen.add(kind)
+        result.append({'kind': kind, 'text': text})
+    return result if result and result[0]['kind'] == 'original' else []
 
 
 def create_server(store, config, port=8840, *, allow_uploads=True):
@@ -115,7 +144,8 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
                     return self.send(404, {'error': 'No completed context for that run'})
                 packet = json.loads((run / 'context.json').read_text(encoding='utf-8'))
                 return self.send(200, {'context': packet, 'answer': (run / 'answer.md').read_text(encoding='utf-8') if (run / 'answer.md').exists() else '',
-                                       'prompt': (run / 'answer_prompt.txt').read_bytes().decode('utf-8')})
+                                       'prompt': (run / 'answer_prompt.txt').read_bytes().decode('utf-8'),
+                                       'search_phrasings': saved_search_phrasings(run, packet.get('question'))})
             if path == '/open':
                 values = parse_qs(parts.query, keep_blank_values=True).get('collection', [])
                 if len(values) != 1 or values[0] not in {row['id'] for row in store.source_catalog()}:
@@ -152,6 +182,8 @@ def create_server(store, config, port=8840, *, allow_uploads=True):
                 if 'llm_model' in overrides and (not isinstance(overrides['llm_model'], str)
                                                 or overrides['llm_model'] not in permitted_models):
                     raise ValueError('Unsupported LLM model')
+                if overrides.get('query_expansion') is True and config.llm == 'none':
+                    return self.send(400, {'error': 'Prompt extension requires a configured LLM.'})
                 active = replace(config, **overrides).validate()
                 selected = store.select_sources(body['sources']) if path in ('/api/query', '/api/plan') and 'sources' in body else store
                 if path == '/api/plan':

@@ -94,6 +94,40 @@ function assertQueryDisabled(app,expected){for(const id of ['retrieve','answer',
 
 @unittest.skipUnless(NODE, 'Node.js is required for frontend behavior checks')
 class SourceSelectionTests(unittest.TestCase):
+    def test_saved_search_phrasings_are_separate_safe_and_clear_for_legacy_runs(self):
+        self.run_ui(r"""
+const app=browser();await settle();
+app.server.runReplies.enabled={...packet('original',['alpha']),search_phrasings:[{kind:'original',text:'original'},{kind:'hypothetical_answer',text:'<script>unsafe</script>'}]};
+await app.openRun('enabled');assert.equal(app.el('search-phrasings').hidden,false);assert.equal(app.el('search-phrasings').open,false);
+assert.equal(app.el('search-phrasing-list').children.length,2);
+assert.equal(app.el('search-phrasing-list').children[1].children[1].textContent,'<script>unsafe</script>');
+assert.match(app.el('search-phrasing-list').textContent,/search hint only/);
+assert.equal(app.el('prompt').textContent,'Synthetic prompt.');assert.equal(app.el('evidence-view').children.length,0);
+app.server.runReplies.legacy=packet('old');await app.openRun('legacy');
+assert.equal(app.el('search-phrasings').hidden,true);assert.equal(app.el('search-phrasing-list').children.length,0);
+""")
+
+    def test_prompt_extension_opt_in_survives_polling_and_provider_changes(self):
+        self.run_ui(r"""
+const app=browser({state:{providers:{embedding:'demo',llm:'http',model:'model-a'}}});await settle();
+assert.equal(app.el('query_expansion').checked,false);
+await app.click('plan');assert.equal(queries(app)[0].body.settings.query_expansion,false);
+app.el('query_expansion').checked=true;await app.el('query_expansion').emit('change');
+await app.refresh();assert.equal(app.el('query_expansion').checked,true);
+app.server.plan.expansion_model_calls=1;app.server.plan.maximum_query_embeddings=5;
+await app.click('plan');assert.equal(queries(app)[1].body.settings.query_expansion,true);
+assert.match(app.el('status').textContent,/1 extra model calls; at most 5 query embeddings/);
+app.el('question').value='Synthetic extension inquiry';await app.click('retrieve');await settle();
+assert.equal(queries(app)[2].body.settings.query_expansion,true);assert.equal(queries(app)[2].body.answer,false);
+app.server.state.job={status:'running'};await app.refresh();assert.equal(app.el('query_expansion').disabled,true);
+app.el('query_expansion').checked=false;await app.el('query_expansion').emit('change');assert.equal(app.el('query_expansion').checked,true);
+app.server.state.job={status:'idle'};app.server.state.providers.llm='none';await app.refresh();
+assert.equal(app.el('query_expansion').checked,true);assertQueryDisabled(app,true);
+assert.equal(app.el('query_expansion').disabled,false);
+app.el('query_expansion').checked=false;await app.el('query_expansion').emit('change');
+assertQueryDisabled(app,false);assert.equal(app.el('query_expansion').disabled,true);
+""")
+
     def run_ui(self, scenario):
         code = HARNESS + '\n(async()=>{\n' + scenario + '\n})().catch(error=>{console.error(error);process.exitCode=1;});'
         result = subprocess.run([NODE, '-e', code], cwd=ROOT, capture_output=True, text=True, timeout=15)

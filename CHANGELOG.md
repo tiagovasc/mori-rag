@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-31 — Optional prompt extension
+
+Settings can now extend a question into several search phrasings. With extension enabled, Mori searches each phrasing and merges distinct passages before relevance scoring, keeping the existing total candidate budget. The original question remains the sole question for Jev, reranking and answering. Extension is off by default and supports a separate model for the extra call.
+
 ## 2026-10-31 — Readable passages and configurable evidence
 
 - New indexes retrieve short search spans and return the complete passage containing the best match. Passages target 400 words with about 50 words of overlap. See [index compatibility](docs/UNITS.md#passages-search-spans-and-compatibility) before migrating an existing corpus.

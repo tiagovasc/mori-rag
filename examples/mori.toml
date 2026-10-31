@@ -12,6 +12,9 @@ summaries = 5
 min_relevance = 40.0
 summary_min_relevance = 40.0
 summary_candidates = 0
+query_expansion = false
+# Optional server-side model for Prompt extension; empty uses this inquiry's LLM.
+query_expansion_model = ""
 rerank_enabled = false
 rerank_k = 20
 rating_neighbors = 0

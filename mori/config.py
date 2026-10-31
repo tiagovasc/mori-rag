@@ -16,6 +16,8 @@ class Config:
     summary_min_relevance: float = 40.0
     summary_candidates: int = 0  # 0 = score every unit's complete summary
     rerank_enabled: bool = False
+    query_expansion: bool = False
+    query_expansion_model: str = ""
     rerank_k: int = 20
     rating_neighbors: int = 0
     answer_neighbors: int = 0
@@ -88,9 +90,14 @@ class Config:
         for name in ("min_relevance", "summary_min_relevance"):
             if type(getattr(self, name)) not in (int, float) or not math.isfinite(getattr(self, name)) or not 0 <= getattr(self, name) <= 100:
                 raise ValueError(f"{name} must be between 0 and 100")
-        for name in ("rerank_enabled", "exclude_full_unit_passages"):
+        for name in ("rerank_enabled", "exclude_full_unit_passages", "query_expansion"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a boolean")
+        if self.query_expansion and self.llm == 'none':
+            raise ValueError("Prompt extension requires a configured LLM")
+        if self.query_expansion_model and (len(self.query_expansion_model) > 256 or any(
+                char.isspace() or not char.isprintable() for char in self.query_expansion_model)):
+            raise ValueError("query_expansion_model must be a model ID without whitespace or control characters")
         active_passage_cap = self.rerank_k if self.rerank_enabled else self.final_passages
         if self.evidence_mode not in ('fixed', 'context'):
             raise ValueError("evidence_mode must be fixed or context")

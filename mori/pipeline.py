@@ -10,7 +10,8 @@ import uuid
 from .budget import ContextBudget
 from .providers import Embeddings, Jev, LLM, expected_embedding_fingerprint
 from .progress import Progress
-from .store import atomic_json, compatible_fingerprint, digest, now, vector
+from .query_expansion import embed_queries, expand, interleave
+from .store import atomic_json, compatible_fingerprint, digest, now
 
 
 def dot(a, b):
@@ -93,6 +94,30 @@ def without_vectors(row):
             if key not in ('vector', 'search_vectors', 'summary_vector', 'summary_search_vectors')}
 
 
+def rank_queries(rows, query_vectors, *, summary=False, require_children=False):
+    """Validate each parent's children once, then score the remaining variants."""
+    pools = [[] for _ in query_vectors]
+    vectors_key = 'summary_search_vectors' if summary else 'search_vectors'
+    spans_key = 'summary_embedding_spans' if summary else 'embedding_spans'
+    vector_key = 'summary_vector' if summary else 'vector'
+    for row in rows:
+        for index, query_vector in enumerate(query_vectors):
+            if index == 0:
+                similarity, match = retrieval_similarity(row, query_vector, summary=summary,
+                                                         require_children=require_children)
+            elif vectors_key in row:
+                matches = [{'seq': span['seq'], 'start': span['start'], 'end': span['end'],
+                            'score': dot(query_vector, values)}
+                           for values, span in zip(row[vectors_key], row[spans_key])]
+                match = max(matches, key=lambda item: (item['score'], -item['seq']))
+                similarity = match['score']
+            else:
+                similarity, match = dot(query_vector, row[vector_key]), None
+            pools[index].append({**row, 'similarity': similarity,
+                                 **({'retrieval_match': match} if match else {})})
+    return [sorted(pool, key=lambda row: (-row['similarity'], row['id'])) for pool in pools]
+
+
 def rating_text(row, unit, by_unit, radius):
     neighbors = window(row, by_unit, radius)
     return json.dumps({'title': unit['title'], 'locator': unit['locator'], 'target_id': row['id'],
@@ -106,7 +131,9 @@ def plan(store, config):
     stats = store.stats()
     summary_count = min(config.summary_candidates or stats['units'], stats['units']) if config.full_units or config.summaries else 0
     context_mode = config.evidence_mode == 'context'
-    result = {'candidate_passages': min(config.retrieval_k, stats['chunks']), 'summary_ratings': summary_count,
+    expansion = bool(config.query_expansion and config.llm != 'none')
+    result = {'expansion_model_calls': int(expansion), 'maximum_query_embeddings': 5 if expansion else 1,
+            'candidate_passages': min(config.retrieval_k, stats['chunks']), 'summary_ratings': summary_count,
             'maximum_rating_decisions': min(config.retrieval_k, stats['chunks']) + summary_count,
             'rating_attempt_ceiling': (min(config.retrieval_k, stats['chunks']) + summary_count) * (config.retries + 1),
             'cache': 'Identical successful decisions are reused; failures never become relevance scores',
@@ -140,7 +167,6 @@ def query(store, question, config, embeddings=None, scorer=None, llm=None, answe
 def _query(store, question, config, embeddings, scorer, llm, answer, progress):
     if not isinstance(question, str) or not question.strip() or len(question) > 4000:
         raise ValueError("Question must contain 1–4000 characters")
-    question = question.strip()
     config.validate()
     context_mode = config.evidence_mode == 'context'
     llm = llm or LLM(config)
@@ -172,41 +198,40 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
         for row in rows:
             by_unit[row['unit_id']].append(row)
         progress.complete('prepare')
-        progress.start('embed', message='Creating the question embedding.')
-        qv = vector(embeddings.encode([question], query=True)[0])
+        extension = {'status': 'disabled', 'variants': [{'kind': 'original', 'text': question}], 'notice': None}
+        if config.query_expansion:
+            progress.start('query_expansion', message='Creating optional retrieval variants from the original question.')
+            extension = expand(question, llm)
+            progress.complete('query_expansion', message=extension['notice'] or 'Prompt extension completed.')
+        else:
+            progress.skip('query_expansion', 'Prompt extension is disabled.')
+        atomic_json(run / 'query_expansion.json', extension)
+        progress.start('embed', message=f'Creating {len(extension["variants"])} retrieval query embeddings.')
+        try:
+            query_vectors = embed_queries(embeddings, [item['text'] for item in extension['variants']])
+        except Exception:
+            if len(extension['variants']) == 1:
+                raise
+            extension.update(status='fallback', notice='The additional search phrasings could not be embedded; retrieval used the original question only.',
+                             attempted_variants=extension['variants'],
+                             variants=[{'kind': 'original', 'text': question}])
+            atomic_json(run / 'query_expansion.json', extension)
+            query_vectors = embed_queries(embeddings, [question])
         progress.complete('embed')
         progress.start('retrieve', message='Searching the selected sources for matching evidence.')
         child_retrieval = fingerprint.get('retrieval_pooling') == 'max-child-cosine-v1'
         if any('search_vectors' in row for row in rows) and not child_retrieval:
             raise ValueError('Child passage embeddings require an explicit max-child retrieval fingerprint')
-        scored = []
-        for row in rows:
-            similarity, match = retrieval_similarity(row, qv, require_children=child_retrieval)
-            scored.append({**row, 'similarity': similarity, **({'retrieval_match': match} if match else {})})
-        candidates, seen, seen_ids = [], set(), set()
-        for row in sorted(scored, key=lambda r: (-r['similarity'], r['id'])):
-            # Identical words in different units retain distinct attribution and context.
-            exact = (row['unit_id'], digest(' '.join(row['text'].split())))
-            identity = (row['unit_id'], row['id'])
-            if exact in seen or identity in seen_ids:
-                continue
-            seen.add(exact)
-            seen_ids.add(identity)
-            candidates.append(row)
-            if len(candidates) == config.retrieval_k:
-                break
+        pools = rank_queries(rows, query_vectors, require_children=child_retrieval)
+        candidates = interleave(pools, config.retrieval_k, passages=True)
         atomic_json(run / 'retrieved.json', [without_vectors(row) for row in candidates])
         summary_pool = list(units.values()) if config.full_units or config.summaries else []
         if config.summary_candidates:
             child_summaries = fingerprint.get('summary_pooling') == 'max-child-cosine-v1'
             if any('summary_search_vectors' in unit for unit in summary_pool) and not child_summaries:
                 raise ValueError('Child summary embeddings require an explicit max-child summary fingerprint')
-            scored_summaries = []
-            for unit in summary_pool:
-                similarity, match = retrieval_similarity(unit, qv, summary=True, require_children=child_summaries)
-                scored_summaries.append({**unit, 'similarity': similarity,
-                                         **({'retrieval_match': match} if match else {})})
-            summary_pool = sorted(scored_summaries, key=lambda unit: (-unit['similarity'], unit['id']))[:config.summary_candidates]
+            summary_pools = rank_queries(summary_pool, query_vectors, summary=True, require_children=child_summaries)
+            summary_pool = interleave(summary_pools, config.summary_candidates)
         progress.complete('retrieve', message=f'Found {len(candidates)} passages and {len(summary_pool)} source summaries to rate.')
 
         def rate_passage(row):
@@ -275,6 +300,8 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
             progress.skip('rate_summaries', 'Full sources and summaries are disabled in the evidence settings.')
         packet = {'schema': 'mori.context.v1', 'question': question, 'run_id': run_id, 'full_units': [], 'summaries': [], 'passages': [],
                   'notices': [], 'counts': {'retrieved': len(candidates), 'rated_passages': len(ranked), 'rated_summaries': len(summaries), 'jev_eligible': len(eligible_passages)}}
+        if extension['notice']:
+            packet['notices'].append(extension['notice'])
         if selection is not None:
             packet['sources'] = request['sources']
 

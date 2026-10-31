@@ -6,6 +6,7 @@ import threading
 
 QUERY_STEPS = (
     ('prepare', 'Prepare sources and providers'),
+    ('query_expansion', 'Prompt extension'),
     ('embed', 'Understand the question'),
     ('retrieve', 'Find matching passages'),
     ('rate_passages', 'Rate passage relevance'),

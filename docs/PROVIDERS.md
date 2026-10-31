@@ -82,6 +82,12 @@ The current server-controlled counting policy, `context_tokenizer = "utf8"`, cha
 
 The answer reserve is sent as `max_tokens` by the HTTP adapter. The generic command contract does not enforce an output maximum; the supplied Codex SDK bridge adds its own instruction and the SDK may add opaque context. Configure a suitable overhead reserve and supported window for the chosen provider. Mori enforces its accounted prompt budget, not an exact provider-wide token total. No existing model context capacity is inferred or enlarged by changing this setting.
 
+## Prompt extension
+
+The web checkbox starts unchecked. To enable extension for CLI queries, set `query_expansion = true` in the config. A configured LLM is required. `query_expansion_model` optionally names a separate model on the same provider for this task; the empty default uses the inquiry's model. Only the server can set the separate model ID. The Codex bridge always uses low reasoning effort for extension, independent of the effort used for answering.
+
+One generation call receives the original question and produces up to four distinct additional texts. The embedding provider receives these search texts as queries. For both passages and optional semantic summary preselection, Mori interleaves ranked results under the existing total cap. Jev receives each candidate with the original question. Generated text stays in a separate local run record, `query_expansion.json`; it never enters source evidence, relevance prompts or the answer handoff. If a multi-query embedding batch fails, Mori tries the original question on its own. Reviewing a plan does not contact a provider.
+
 ## Manual handoff
 
 `llm = "none"` still saves ranked `context.json`, `context.md` and `answer_prompt.txt`. Give the prompt to the LLM of your choice. This mode does not generate missing summaries or perform optional LLM reranking. It is the default because an application should not silently choose a paid answer provider.

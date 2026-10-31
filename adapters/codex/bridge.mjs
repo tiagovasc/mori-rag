@@ -28,7 +28,7 @@ function validatePacket(packet) {
 
 export async function complete(Codex, packet, directory, environment = process.env) {
   validatePacket(packet);
-  const effort = environment.MORI_CODEX_EFFORT || 'low';
+  const effort = packet.task === 'query_expansion' ? 'low' : (environment.MORI_CODEX_EFFORT || 'low');
   if (!['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'].includes(effort)) {
     throw Error('Invalid MORI_CODEX_EFFORT');
   }
