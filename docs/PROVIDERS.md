@@ -97,4 +97,6 @@ One generation call receives the original question and produces up to four disti
 
 ## Manual handoff
 
+The answer prompt asks the model to find support for each part of the question across the whole packet. It directs the model to copy citation IDs from the headings of the items it uses and check the other items before reporting missing evidence. Citation validation checks that IDs exist and that substantive paragraphs have citations. Assessing whether a cited item supports a claim still requires reading the evidence.
+
 `llm = "none"` still saves ranked `context.json`, `context.md` and `answer_prompt.txt`. Give the prompt to the LLM of your choice. This mode does not generate missing summaries or perform optional LLM reranking. It is the default because an application should not silently choose a paid answer provider.

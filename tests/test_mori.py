@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 from mori.config import Config, load
 from mori.ingest import chunks, extract, ingest, load_file
-from mori.pipeline import answer_prompt, plan, query, validate_answer
+from mori.pipeline import answer_prompt, plan, query, render_context, validate_answer
 from mori.providers import Embeddings, Jev, LLM, http_json
 from mori.store import Store, digest, validate_unit, vector
 
@@ -174,6 +174,19 @@ class MoriTests(unittest.TestCase):
         prompt = answer_prompt(self.packet(self.run_query()))
         self.assertIn('secondary account', prompt)
         self.assertIn('Summary only:', prompt)
+
+    def test_answer_instructions_do_not_anchor_ids_or_rewrite_evidence(self):
+        packet = self.packet(self.run_query())
+        original = 'Original text: [U1] [M1] [P1]\nRésumé αβγ — preserve every character.'
+        packet['full_units'][0]['text'] = original
+        before = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        evidence = render_context(packet)
+        prompt = answer_prompt(packet)
+        self.assertTrue(prompt.endswith(evidence))
+        instructions = prompt[:-len(evidence)]
+        self.assertNotRegex(instructions, r'\b[UMP]\d+\b')
+        self.assertIn(original, prompt)
+        self.assertEqual(json.dumps(packet, ensure_ascii=False, sort_keys=True), before)
 
     def test_missing_summary_stops_ingestion(self):
         with self.assertRaisesRegex(ValueError, 'summary'):

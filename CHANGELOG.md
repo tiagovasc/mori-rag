@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-10-31 — Evidence coverage in answers
+
+The answer prompt now asks the model to find support for each part of the question throughout the packet and check other items before reporting missing evidence. It describes how to copy citations directly from evidence headings without suggesting specific numbered IDs.
+
 ## 2026-10-31 — Optional prompt extension
 
 Settings can now extend a question into several search phrasings. With extension enabled, Mori searches each phrasing and merges distinct passages before relevance scoring, keeping the existing total candidate budget. The original question remains the sole question for Jev, reranking and answering. Extension is off by default and supports a separate model for the extra call.

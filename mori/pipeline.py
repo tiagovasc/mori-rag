@@ -475,12 +475,14 @@ def render_context(packet):
 
 
 def answer_prompt(packet):
-    return ('Answer the original question using only the supplied evidence. Explain the reasoning, tensions and limitations. '
-            'Cite every substantive paragraph with supplied [U1], [M1] or [P1] IDs. This includes introductions, '
-            'conclusions, evidence limitations and substantive list items; cite each separately. '
-            'Write each evidence ID in its own bracket, such as [U1] [P1]. Never group IDs or use ID ranges. '
-            'Put page or other locators outside the citation brackets, such as [U1] (physical pp. 8–11). '
-            'Do not add an uncited preface or closing paragraph. Distinguish complete original units, '
+    return ('Answer each part of the original question using only the supplied evidence. Look across the whole packet '
+            'for the items that most directly support each point. Include concrete details or qualifications from '
+            'other items when they change or complete the answer. Before calling a detail missing, check whether '
+            'another item supplies it. Explain the reasoning, tensions and limitations. '
+            'For each substantive paragraph or list item, including the introduction and conclusion, copy the '
+            'bracketed ID from the heading of each item that supports its claims. Cite only items you rely on. '
+            'Write each ID in its own brackets and put page or other locators outside them. Never group IDs or use '
+            'ID ranges. Distinguish complete original units, '
             'original passages and summaries: a summary is a secondary account, not proof that you read its original. '
             'Use supplied source metadata for attribution and respect recorded extraction and summary limitations. '
             'Quote only exact original-source text, never paraphrases as quotations. Do not invent bibliographic facts, '
