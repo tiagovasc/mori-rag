@@ -6,9 +6,11 @@ Every `Config` dataclass field in `mori/config.py` is accepted as a top-level TO
 |---|---:|---|
 | `retrieval_k` | 500 | Maximum unique semantic passage candidates |
 | `jev_k` | 100 | Maximum relevant passages after Jev and full-unit exclusion |
-| `final_passages` | 100 | Final cap when heavier reranking is off |
+| `final_passages` | 20 | Fixed-mode final cap when heavier reranking is off |
+| `query_expansion` | false | Optional source-free prompt extension for semantic retrieval |
+| `query_expansion_model` | empty | Extension model override; empty uses `llm_model` |
 | `rerank_enabled` | false | Additional LLM passage ordering |
-| `rerank_k` | 20 | Final cap when heavier reranking is on |
+| `rerank_k` | 20 | Fixed-mode final passage cap when reranking is on |
 | `full_units` | 1 | Complete originals chosen through the summary branch |
 | `summaries` | 5 | Other, distinct unit summaries |
 | `summary_candidates` | 0 | 0 scores all summaries; positive values semantically preselect that many |
@@ -17,9 +19,16 @@ Every `Config` dataclass field in `mori/config.py` is accepted as a top-level TO
 | `rating_neighbors` | 0 | Number of chunks on each side shown to Jev |
 | `answer_neighbors` | 0 | Number on each side included in the final packet |
 | `exclude_full_unit_passages` | true | Avoid repeating units already included in full |
-| `chunk_words` / `chunk_overlap` | 120 / 20 | Deterministic whitespace-window sizes |
+| `chunk_words` / `chunk_overlap` | 400 / 50 | Target parent passage words and approximate overlap |
+| `chunk_strategy` | sentence | Prefer sentence/paragraph boundaries; `words` selects whitespace windows |
+| `embedding_span_tokens` | 64 | Child search-span token target, bounded by the embedding provider allowance |
+| `evidence_mode` | fixed | Fixed passage count; `context` instead fits whole shortlisted passages within the remaining budget |
+| `context_window_tokens` | 100000 | Context-mode allowance, using conservative UTF-8 byte accounting |
+| `context_overhead_tokens` | 1024 | Context-mode reserve for adapter overhead |
+| `context_tokenizer` | utf8 | Server-controlled counting policy; no model-specific tokenizer mapping |
+| `llm_max_output_tokens` | 4096 | Output allowance, also reserved in context mode |
 | `context_max_chars` | 180000 | Maximum complete rendered evidence packet |
-| `llm_max_input_chars` | 200000 | Maximum prompt sent to a final/summary/rerank provider |
+| `llm_max_input_chars` | 200000 | Maximum characters in any prompt sent through the built-in LLM adapter, including Prompt extension |
 | `unit_max_chars` | 500000 | Import boundary guard; define smaller units explicitly if exceeded |
 | `max_rating_calls` | 2000 | Maximum planned decisions before starting; retries may multiply HTTP calls |
 | `workers` | 8 | Concurrent relevance decisions |
@@ -27,9 +36,15 @@ Every `Config` dataclass field in `mori/config.py` is accepted as a top-level TO
 | `retries` | 2 | Additional HTTP retries after the first attempt |
 | `request_max_bytes` | 120000 | Jev request body guard, measured in UTF-8 bytes |
 
-Counts satisfy `retrieval_k >= jev_k >=` the active passage cap: `final_passages` when reranking is off, or `rerank_k` when it is on. An inactive cap does not constrain the current pipeline; enabling that stage validates its cap. The reference implementation caps semantic candidates at 10,000, workers at 64 and neighbor radius at 10. These are implementation guards, not provider promises. Zero full units/summaries are allowed for explicit ablation, but the normal design uses both branches.
+In fixed mode, counts satisfy `retrieval_k >= jev_k >=` the active passage cap: `final_passages` when reranking is off, or `rerank_k` when it is on. In context mode, `retrieval_k >= jev_k` still applies; the fixed final caps are inactive and `jev_k` bounds the candidate pool. The reference implementation caps semantic candidates at 10,000, workers at 64, neighbor radius at 10 and the context allowance at 2,000,000. These are implementation guards, not provider promises. Zero full units/summaries are allowed for explicit ablation, but the normal design uses both branches.
 
 Setting both `full_units = 0` and `summaries = 0` disables summary ranking and removes summary decisions from the query budget. Either positive setting still needs summary ranking. Requests that require answering or reranking fail before retrieval/provider calls when no LLM is configured.
+
+Context mode counts the complete answer prompt, including question, instructions, metadata and evidence, at one estimated token per UTF-8 byte. It reserves output and adapter overhead, and enforces both character guards as well. This is conservative accounting, not an exact model token count or a guarantee about hidden provider overhead. Complete units and summaries must fit first; oversized passages are skipped whole while later candidates are still considered. Nothing is silently truncated. The saved packet records selected/skipped counts and limiting constraints.
+
+Prompt extension requires a configured LLM even for evidence-only requests. It makes one optional call for up to four distinct retrieval variants alongside the original question. Generated variants are search inputs, never evidence; Jev and answering still use the original question. Invalid generation or additional-query embedding failures fall back to the original query with a recorded notice. The shared `retrieval_k` limit and rating budget do not multiply with variants.
+
+`llm_model` routes summary generation, reranking and answering. `query_expansion_model`, when set, routes only prompt extension through the same LLM adapter and endpoint. `llm_models` defaults to an empty list and adds server-approved model choices for the local interface; the configured default remains available. Choosing an answer model does not select its context allowance or tokenizer automatically. Configure limits explicitly for the provider you use.
 
 ## Qualitative anchors and numeric caps
 

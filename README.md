@@ -8,21 +8,21 @@ Books, articles, lectures and podcasts share the same contract: a source contain
 
 ![Mori's local research interface](docs/research-room.jpg)
 
+The diagram shows the default candidate limits. The final packet uses up to 20 passages in fixed-count mode, or as many whole shortlisted passages as fit in context-budget mode.
+
 ```mermaid
 flowchart TD
-    Q[Question] --> E[Semantic search: 500 passages]
-    E --> J[Jev relevance ranking: up to 100]
-    J --> O{Optional LLM reranker}
-    O -->|Disabled by default| P[Keep up to 20 Jev-ranked passages]
-    O -->|Enabled| R[Select up to 20 passages]
-    Q --> S[Rank complete unit summaries with Jev]
-    S --> U[Read the best unit in full]
-    S --> M[Keep five other summaries]
-    P --> C[Source-aware evidence packet]
-    R --> C
-    U --> C
-    M --> C
-    C --> A[Answer model or portable model handoff]
+    Q[Original question] --> E[Search the selected sources]
+    Q -. Prompt extension on .-> V[Up to four extra search phrasings]
+    V --> E
+    E --> D[Merge distinct passages: up to 500 total]
+    D --> J[Jev rates each passage against the original question]
+    J --> P[Shortlist up to 100 eligible passages; optionally rerank]
+    Q --> S[Jev rates complete summaries against the original question]
+    S --> U[One full unit and up to five other summaries]
+    U --> C[Assemble the evidence packet]
+    P --> C
+    C --> A[Answer the original question or save the handoff]
 ```
 
 ## Why this design
@@ -35,7 +35,7 @@ A passage can answer a narrow question while hiding the qualifications around it
 | Summaries of other units | Broaden coverage without pretending those originals were read | 5 |
 | Original passages | Supply specific evidence from the remaining sources | Up to 20 |
 
-Passages from units already included in full are excluded by default. Summary selections are distinct and exclude the full units. If the collection is small or too little evidence meets the relevance threshold, the packet reports the shortfall. It never pads results with duplicates or invents sources.
+Passages from units already included in full are excluded by default. If too few units meet the threshold for the **required full units**, Mori stops and explains why. If fewer additional summaries or passages qualify, the packet reports the shortfall. It never fills an empty slot by duplicating evidence.
 
 Identical passages from different units keep their separate attribution and context. Source metadata, including authorship and extraction caveats, accompanies the evidence in both the saved packet and the model handoff.
 
@@ -77,13 +77,21 @@ python -m mori --config examples/mori.toml serve
 
 Open **http://127.0.0.1:8840**. Upload source units, adjust counts and context options, review the call budget, inspect source evidence, download a packet, or answer with your configured model. The interface is local-only; credentials stay on the server. The supplied Northbridge corpus is an explicitly fictional, redistributable teaching example.
 
-Open **Sources** inside the question box, just above **Settings**, to choose what to search. Select any combination with the checkboxes, or use Select all / Select none. The menu starts collapsed and shows the selected-source count while closed. Both the budget and the complete retrieval pipeline use that selection, including full units, summaries and neighboring passages. Empty or unavailable selections block submission. Saved inquiries retain their source selection; adapters can expose named collection groups through the same interface.
+### Choose what to search
+
+Open **Sources** inside the question box and check the collections you want to search. The selection applies to passages, summaries, full units and the budget preview. Checking a source uses its existing index; it doesn't import or embed it again. Saved inquiries retain their source selection.
 
 **Settings** includes an **LLM model** dropdown for answers and optional reranking. The server's `llm_model` is the default; add permitted alternatives to `llm_models = ["your-other-model-id"]` in your configuration. The chosen model applies to that inquiry and is saved with its request. Model choice survives progress updates; unavailable choices require an explicit replacement. Imports continue using the server's default model. With no LLM configured, the dropdown is disabled and evidence handoff remains available.
 
-**Settings → Prompt extension** is off by default. Turn it on to search a conversational question five ways: the original wording, a clearer restatement, a narrower question, a broader formulation with related concepts, and a short hypothetical answer. The last is a search hint, never evidence. Mori takes turns drawing from the ranked lists and skips repeat passages before asking Jev to rate them. Matching text in different source units keeps its attribution. The total candidate and rating limits stay the same. Jev, optional reranking, and the final answer always use your original question.
+### Try Prompt extension
 
-Extending a prompt costs one extra model call, even for an evidence-only inquiry. It receives the question without any source passages. If it returns only some usable phrasings, Mori uses those; if none can be used, it searches the original question. No sources need re-indexing. See [extension model configuration](docs/PROVIDERS.md#prompt-extension).
+**Settings → Prompt extension** starts off. Turn it on when sources might use different words from your question. For example, the fictional question “Why did the town want the marsh back?” might also search for *wetland restoration* or *floodwater storage*. Mori keeps the original wording and asks for four search hints: a clearer restatement, a narrower question, a broader formulation and a hypothetical answer. After the run, open **Search phrasings** to see which texts were used. The hypothetical answer isn't evidence and cannot be cited.
+
+Mori draws from each ranked list in turn, skipping repeat passages before Jev rates them. The candidate limit applies **across all phrasings**, not per phrasing. If a collection has 80 distinct passages and the limit is 500, the ordinary search already includes all 80; extension cannot add a new passage to that pool. It can matter when only part of the collection fits. Jev, optional reranking and the final answer always use the **original question**.
+
+**Review query budget** previews the extra work without contacting a provider. Running extension takes one additional LLM call, even for **Build evidence**. It sends the question without source passages; the embedding provider receives the search phrasings. Unusable variants are skipped or Mori falls back to the original. See [provider and model settings](docs/PROVIDERS.md#prompt-extension).
+
+### Choose how much evidence to include
 
 Under **Settings → Evidence size**, choose **Fixed passage counts** (the existing default) or **Fill context budget**. Budget mode starts at **100,000 tokens** and reserves the configured complete units and most relevant summaries first—one full unit and five summaries by default, with no summary duplicating a full unit. It then considers whole passages in relevance order, keeping each one that fits and trying smaller candidates when one does not. The fixed final-passage counts do not apply in this mode. Full sources and summaries are never shortened to make room; an oversized required bundle produces an explicit error.
 
@@ -103,6 +111,12 @@ context_overhead_tokens = 1024     # server-configured allowance for provider fr
 A live progress panel shows each step from source preparation through retrieval, relevance scoring, evidence assembly, answering, citation checks and saving. Passage and summary counters advance as individual ratings finish, including reused cached decisions. Optional steps are marked skipped; failed steps retain the completed work. The bar measures workflow completion, not time remaining. Elapsed time and connection status remain visible during longer model calls, and progress polling retries automatically after a temporary connection failure.
 
 The repository is installed from source; the package is not claimed to be published to PyPI. A network-free installation/test of the core is `python -m pip install -e .` followed by the test command below. `examples/demo.toml` uses explicitly labelled lexical hash vectors for fixtures, not semantic search.
+
+## One installation, separate libraries
+
+Mori's code and your library are separate. The CLI reopens the existing index in `--data` (default: `.mori/`). You can run multiple rooms from the same checkout: point each at its data directory and give it a different port if they run together. A single room can also offer several sources through its checkboxes. See [source selection and collection adapters](docs/ADAPTERS.md#source-selection-in-the-research-room).
+
+Update the shared code once and restart the running rooms to load backend changes. New material needs indexing; changing the answer model or Prompt extension does not. If you change how the text is chunked or embedded, [build a separate compatible index](docs/UNITS.md#passages-search-spans-and-compatibility). Keep private databases and inquiry history out of the published template.
 
 ## Choose your embeddings
 
@@ -224,7 +238,8 @@ Each query writes an immutable run directory under your data directory:
 
 ```text
 request.json             Original question, settings, rubric, model fingerprint and budget
-retrieved.json           Semantic candidates and source identities
+query_expansion.json     Extension status and search phrasings; separate from cited evidence
+retrieved.json           Distinct semantic candidates and their source identities
 passage_ratings.json     Jev passage ranking and distributions
 summary_ratings.json     Independent summary ranking
 context.json             Structured complete-unit / summary / passage evidence

@@ -10,9 +10,17 @@ Credentials come from named environment variables. Mori does not scan unrelated 
 
 Provider endpoints must be final URLs: HTTP redirects are rejected so bearer credentials and source data are never forwarded to another endpoint. Explicit public-source fetching separately supports checked redirects, pins connections to validated public IP addresses, retains TLS hostname verification, and bypasses environment proxies. Upload `summarize` and query `answer` switches require real JSON booleans; a string such as `"false"` cannot activate model calls.
 
-Jev receives candidate passages, optional neighbors, summaries and the question. Hosted embedding providers receive source/summary segments and queries. A final model receives the complete selected evidence; summary generation receives the original unit. Decide which destinations are allowed for your data before running imports or queries.
+Choose provider destinations by the material each stage receives. Running the interface on localhost does not make hosted inference local.
 
-`.mori/` and uploaded sources contain private full texts, vectors, questions, cached decisions and answers. They are ignored by Git. Back them up privately if needed. Each query is preserved; there is no automatic retention purge or account deletion workflow in this local app.
+| Stage | What the configured provider receives |
+|---|---|
+| Prompt extension (off by default) | Your original question and instructions for generating search phrasings. No passages or summaries. |
+| Embeddings | At import: source and summary spans. At query time: the original and, when enabled, usable generated phrasings. Local embedding models process these on your machine. |
+| Jev relevance | The original question and each candidate passage with its configured neighbors, or a complete summary. Generated phrasings are not sent to Jev. |
+| Optional reranking and answering | The reranker receives the original question and shortlisted passage evidence; the answer model receives the original question and assembled evidence. |
+| Optional summary generation | The original unit to summarize. |
+
+Keep the data directory private: it contains full texts, vectors, questions, saved search phrasings, cached decisions and answers. The supplied Git ignore rules cover `.mori/`, `.mori-*/` and `.local/`. If you choose a different `--data` directory inside a checkout, exclude it explicitly before committing. Each inquiry is preserved; there is no automatic retention purge.
 
 Explicit URL import permits public HTTPS only, rechecks redirects and pins connections to the validated public address. It is a convenience for local authorized fetching, not a hardened hostile-network crawler. For untrusted automated feeds or a public service, also use an isolated egress-controlled fetcher with site-specific policies and resource limits.
 

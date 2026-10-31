@@ -12,7 +12,7 @@ MiniLM was verified live locally. OpenAI's request/response contract is covered 
 
 Install `.[local]` and use `embedding = "local"`. The default model is `sentence-transformers/all-MiniLM-L6-v2`. The selected Sentence Transformer's normal pooling/projection is used, with normalized output. Remote custom model code is not enabled. Pin `embedding_revision` when reproducibility matters.
 
-Inputs are checked against the model's token limit before inference. Overlong passages fail instead of being silently clipped; reduce `chunk_words` and create a new index, or select a suitable longer-context embedding model. Query/document prefixes are separately configurable and included in the fingerprint.
+With the default sentence strategy, Mori embeds short search spans inside each readable passage. A 400-word passage does not have to fit in one encoder input. The local adapter checks the complete input, including its prefix, before inference and rejects inputs it would have to truncate. Query/document prefixes are separately configurable and included in the fingerprint.
 
 ## Existing ONNX model
 
@@ -66,7 +66,7 @@ The endpoint accepts `model`, `messages` and `max_tokens`, and returns `choices[
 
 ## Trusted command / Codex
 
-`llm = "command"` invokes `llm_command` as an argument array with `shell=False`. It receives one JSON object on stdin: `{task, prompt, model}`. Return `{text}` as the only JSON object on stdout; diagnostics belong on stderr. `task` is `summarize`, `rerank` or `answer`. Commands are trusted server configuration and cannot be set through uploads or browser settings. Do not interpolate source text into shell commands.
+`llm = "command"` invokes `llm_command` as an argument array with `shell=False`. It receives one JSON object on stdin: `{task, prompt, model}`. Return `{text}` as the only JSON object on stdout; diagnostics belong on stderr. The tasks are `summarize`, `query_expansion`, `rerank` and `answer`. For `query_expansion`, the returned `text` contains a JSON object with four string fields: `improved`, `specific`, `broad` and `hypothetical_answer`. Commands are trusted server configuration and cannot be set through uploads or browser settings. Do not interpolate source text into shell commands.
 
 `adapters/codex/bridge.mjs` implements that contract using the official Codex SDK. Install with `npm ci --ignore-scripts` inside its directory, authenticate Codex separately, then use `examples/codex.toml` from the project root. The model and reasoning effort (`MORI_CODEX_EFFORT`) are configurable. This is a local user workflow, not a promise that a subscription can host an unrestricted public API.
 
@@ -84,7 +84,14 @@ The answer reserve is sent as `max_tokens` by the HTTP adapter. The generic comm
 
 ## Prompt extension
 
-The web checkbox starts unchecked. To enable extension for CLI queries, set `query_expansion = true` in the config. A configured LLM is required. `query_expansion_model` optionally names a separate model on the same provider for this task; the empty default uses the inquiry's model. Only the server can set the separate model ID. The Codex bridge always uses low reasoning effort for extension, independent of the effort used for answering.
+The web checkbox starts unchecked. For CLI queries, enable extension in the TOML file used with `--config`. This example assumes an LLM provider is already configured:
+
+```toml
+query_expansion = true       # default: false
+query_expansion_model = ""   # use this inquiry's LLM, or set a valid ID on the same provider
+```
+
+A separate extension model is a server setting. Choosing it does not change the answer model or turn extension on in the browser. The Codex bridge uses low reasoning effort for extension even when `MORI_CODEX_EFFORT` selects a higher effort for answers.
 
 One generation call receives the original question and produces up to four distinct additional texts. The embedding provider receives these search texts as queries. For both passages and optional semantic summary preselection, Mori interleaves ranked results under the existing total cap. Jev receives each candidate with the original question. Generated text stays in a separate local run record, `query_expansion.json`; it never enters source evidence, relevance prompts or the answer handoff. If a multi-query embedding batch fails, Mori tries the original question on its own. Reviewing a plan does not contact a provider.
 
