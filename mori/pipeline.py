@@ -151,20 +151,43 @@ def plan(store, config):
     return result
 
 
-def query(store, question, config, embeddings=None, scorer=None, llm=None, answer=False, progress=None):
-    """Build evidence with an optional source-free progress snapshot callback."""
+class Cancelled(RuntimeError):
+    """The person stopped the inquiry; completed ratings stay cached for a retry."""
+
+
+STOPPED_MESSAGE = 'Stopped on request. Completed ratings are cached, so trying again reuses them.'
+
+
+def query(store, question, config, embeddings=None, scorer=None, llm=None, answer=False, progress=None,
+          live=None, cancel=None):
+    """Build evidence with an optional source-free progress snapshot callback.
+
+    `live` optionally receives each rating as it arrives (see mori.live.LiveBoard);
+    `cancel` is an optional threading.Event checked between units of work.
+    """
     progress = progress if isinstance(progress, Progress) else Progress(progress)
     progress.start('prepare', message='Checking the request and preparing selected sources and providers.')
     try:
-        result = _query(store, question, config, embeddings, scorer, llm, answer, progress)
+        result = _query(store, question, config, embeddings, scorer, llm, answer, progress, live, cancel)
         progress.finish()
         return result
-    except Exception:
-        progress.fail()
+    except Exception as exc:
+        progress.fail(STOPPED_MESSAGE if isinstance(exc, Cancelled) else None)
         raise
 
 
-def _query(store, question, config, embeddings, scorer, llm, answer, progress):
+def _query(store, question, config, embeddings, scorer, llm, answer, progress, live=None, cancel=None):
+    def check_cancel():
+        if cancel is not None and cancel.is_set():
+            raise Cancelled(STOPPED_MESSAGE)
+
+    def tell(method, *args):
+        # The live board is an optional display aid; it must never change the evidence or stop a run.
+        if live is not None:
+            try:
+                getattr(live, method)(*args)
+            except Exception:
+                pass
     if not isinstance(question, str) or not question.strip() or len(question) > 4000:
         raise ValueError("Question must contain 1–4000 characters")
     config.validate()
@@ -191,6 +214,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
     if selection is not None:
         request['sources'] = [{'id': row['id'], 'label': row['label']} for row in selection]
     atomic_json(run / 'request.json', request)
+    tell('note', 'run', run_id)
     try:
         units = {u['id']: u for u in store.units()}
         rows = store.chunks()
@@ -198,6 +222,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
         for row in rows:
             by_unit[row['unit_id']].append(row)
         progress.complete('prepare')
+        check_cancel()
         extension = {'status': 'disabled', 'variants': [{'kind': 'original', 'text': question}], 'notice': None}
         if config.query_expansion:
             progress.start('query_expansion', message='Creating optional retrieval variants from the original question.')
@@ -206,6 +231,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
         else:
             progress.skip('query_expansion', 'Prompt extension is disabled.')
         atomic_json(run / 'query_expansion.json', extension)
+        check_cancel()
         progress.start('embed', message=f'Creating {len(extension["variants"])} retrieval query embeddings.')
         try:
             query_vectors = embed_queries(embeddings, [item['text'] for item in extension['variants']])
@@ -218,6 +244,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
             atomic_json(run / 'query_expansion.json', extension)
             query_vectors = embed_queries(embeddings, [question])
         progress.complete('embed')
+        check_cancel()
         progress.start('retrieve', message='Searching the selected sources for matching evidence.')
         child_retrieval = fingerprint.get('retrieval_pooling') == 'max-child-cosine-v1'
         if any('search_vectors' in row for row in rows) and not child_retrieval:
@@ -233,6 +260,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
             summary_pools = rank_queries(summary_pool, query_vectors, summary=True, require_children=child_summaries)
             summary_pool = interleave(summary_pools, config.summary_candidates)
         progress.complete('retrieve', message=f'Found {len(candidates)} passages and {len(summary_pool)} source summaries to rate.')
+        check_cancel()
 
         def rate_passage(row):
             return {**row, 'rating': scorer.score(question, rating_text(row, units[row['unit_id']], by_unit, config.rating_neighbors), 'target passage')}
@@ -245,16 +273,20 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
                 progress.skip(stage, 'No items to rate for the selected evidence settings.')
                 return []
             progress.start(stage, total=len(items), message='Completed ratings update as they arrive; cached decisions are reused.')
+            tell('begin', stage, len(items))
             results = []
             with ThreadPoolExecutor(max_workers=config.workers) as pool:
-                futures = [pool.submit(function, item) for item in items]
+                futures = {pool.submit(function, item): index for index, item in enumerate(items)}
                 try:
                     for future in as_completed(futures):
                         row = future.result()
                         results.append(row)
                         progress.advance(stage, cached=row['rating'].get('cached', False))
-                except Exception:
-                    progress.fail()
+                        tell('rated', stage, futures[future], row,
+                             units.get(row.get('unit_id')) if stage == 'rate_passages' else row)
+                        check_cancel()
+                except Exception as exc:
+                    progress.fail(STOPPED_MESSAGE if isinstance(exc, Cancelled) else None)
                     for future in futures:
                         future.cancel()
                     raise
@@ -263,6 +295,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
             return results
 
         ranked = rate(candidates, rate_passage, 'rate_passages', finish=False)
+        check_cancel()
         if summary_pool:
             if candidates:
                 progress.complete('rate_passages')
@@ -292,6 +325,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
             selected.append(row)
             if len(selected) == config.jev_k:
                 break
+        tell('note', 'shortlist', len(selected))
         if summary_pool:
             progress.complete('rate_summaries')
         else:
@@ -341,6 +375,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
                                  + ', '.join(constraints) + ')' + needed
                                  + '; choose smaller explicit units, fewer summaries '
                                  'or a larger supported budget; no truncation')
+        check_cancel()
         if config.rerank_enabled and selected:
             progress.start('rerank', message='Refining the shortlisted passages with the configured model.')
             ids = {r['id'] for r in selected}
@@ -359,6 +394,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
             progress.skip('rerank', 'Reranking is disabled.' if not config.rerank_enabled else 'No eligible passages to rerank.')
             if not context_mode:
                 selected = selected[:config.final_passages]
+        check_cancel()
         progress.start('assemble', message='Selecting full sources, summaries and exact passages within the evidence budget.')
         for row in selected:
             neighbors = window(row, by_unit, config.answer_neighbors)
@@ -417,10 +453,13 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
         # Preserve source CR/LF sequences and the exact prompt counted/sent on Windows too.
         (run / 'context.md').write_text(rendered, encoding='utf-8', newline='\n')
         (run / 'answer_prompt.txt').write_text(prompt, encoding='utf-8', newline='\n')
+        tell('note', 'evidence', {key: packet['counts'][key] for key in ('full_units', 'summaries', 'passages')})
         progress.complete('assemble')
+        check_cancel()
         if answer:
             progress.start('answer', message='Waiting for the configured answer model. This step may take a while.')
             raw_text = llm.complete('answer', prompt)
+            check_cancel()
             progress.complete('answer')
             progress.start('validate', message='Checking that answer citations refer to the supplied evidence.')
             try:
@@ -437,6 +476,7 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
         else:
             progress.skip('answer', 'Evidence only was requested.')
             progress.skip('validate', 'No generated answer to check.')
+        check_cancel()
         progress.start('save', message='Saving the completed inquiry and its evidence.')
         if answer:
             (run / 'answer.md').write_text(text, encoding='utf-8')
@@ -445,7 +485,11 @@ def _query(store, question, config, embeddings, scorer, llm, answer, progress):
         return {'run_id': run_id, 'directory': str(run), 'counts': packet['counts'], 'notices': packet['notices'], 'answer': answer}
     except Exception as exc:
         # Exceptions from our contracts omit provider response bodies, headers and secrets.
-        atomic_json(run / 'status.json', {'status': 'failed', 'error_type': type(exc).__name__, 'finished': now(), 'note': 'Successful ratings remain cached; inspect the command error and retry explicitly'})
+        if isinstance(exc, Cancelled):
+            atomic_json(run / 'status.json', {'status': 'stopped', 'error_type': 'Cancelled', 'finished': now(),
+                                              'note': 'Stopped on request; successful ratings remain cached for a retry'})
+        else:
+            atomic_json(run / 'status.json', {'status': 'failed', 'error_type': type(exc).__name__, 'finished': now(), 'note': 'Successful ratings remain cached; inspect the command error and retry explicitly'})
         raise
 
 

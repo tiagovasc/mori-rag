@@ -27,11 +27,11 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const elements = new Map();
 function element() {
-  return {disabled: false, append() {}, replaceChildren() {}, setAttribute() {}, addEventListener() {}};
+  return {disabled: false, children: [], dataset: {}, append() {}, replaceChildren() {}, setAttribute() {}, removeAttribute() {}, addEventListener() {}};
 }
 const document = {
   getElementById(id) {if (!elements.has(id)) elements.set(id, element()); return elements.get(id);},
-  createElement: element,
+  createElement: element, createTextNode: element,
   querySelector() {return {content: 'synthetic-token'};},
 };
 let releaseState;
@@ -47,7 +47,9 @@ vm.runInContext(fs.readFileSync('mori/static/app.js', 'utf8'), context);
 for (const id of ['upload', 'retrieve', 'answer', 'plan']) assert.equal(elements.get(id).disabled, true, id);
 releaseState({stats: {units: 1, chunks: 1}, sources: [{id: 'fixture', label: 'Fixture', units: 1, chunks: 1}], allow_uploads: true, settings: {}, providers: {embedding: 'demo', llm: 'none'}, job: {status: 'idle'}});
 setImmediate(() => {
-  for (const id of ['upload', 'retrieve', 'answer', 'plan']) assert.equal(elements.get(id).disabled, false, id);
+  for (const id of ['upload', 'retrieve', 'plan']) assert.equal(elements.get(id).disabled, false, id);
+  // No LLM is configured in this state, so answering stays unavailable.
+  assert.equal(elements.get('answer').disabled, true, 'answer');
   assert.equal(stateRequests, 1);
 });
 """
@@ -146,6 +148,56 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.request('/../corpus.sqlite')[0], 404)
         self.assertEqual(self.request('/.env')[0], 404)
         self.assertEqual(self.request('/api/runs/../../env')[0], 404)
+
+    def test_validation_errors_explain_the_problem(self):
+        # Contract messages reach the page instead of one generic failure.
+        job_before = json.loads(self.request('/api/state')[1])['job']
+        cases = (({'question': '   ', 'settings': {}}, 'Enter a question'),
+                 ({'question': 'Synthetic?', 'settings': {'jev_k': 5, 'final_passages': 20}}, 'retrieval_k >= jev_k'),
+                 ({'question': 'Synthetic?', 'answer': True}, 'No answer model is configured'),
+                 ({'question': 'Synthetic?', 'settings': {'rerank_enabled': True}}, 'No answer model is configured'),
+                 ({'question': 'Synthetic?', 'sources': ['missing']}, 'Unknown source selection'))
+        for body, message in cases:
+            code, response, _ = self.request('/api/query', body)
+            self.assertEqual(code, 400, body)
+            self.assertIn(message, json.loads(response)['error'], body)
+        code, response, _ = self.request('/api/plan', {'settings': {'retrieval_k': 0}})
+        self.assertEqual((code, json.loads(response)['error']), (400, 'retrieval_k must be a positive integer'))
+        code, response, _ = self.request('/api/upload', {'filename': 'notes.txt', 'data': '%%%'})
+        self.assertEqual((code, json.loads(response)['error']), (400, 'The uploaded file data is not valid base64'))
+        code, response, _ = self.request('/api/plan', {}, {'X-Mori-Token': 'stale'})
+        self.assertEqual(code, 403)
+        self.assertIn('Reload the page', json.loads(response)['error'])
+        # A rejected request never starts a job or occupies the single operation slot.
+        self.assertEqual(json.loads(self.request('/api/state')[1])['job'], job_before)
+
+    def test_saved_inquiries_survive_damaged_runs(self):
+        runs = Path(self.temp.name) / 'runs'
+        good, broken, bare = '20261031T000001-aaaaaaaaaa', '20261031T000002-bbbbbbbbbb', '20261031T000003-cccccccccc'
+        for run_id in (good, broken, bare):
+            (runs / run_id).mkdir(parents=True)
+        (runs / good / 'request.json').write_text(json.dumps({'question': 'Readable', 'created': '2026-10-31T00:00:01+00:00',
+                                                              'config': {'llm_model': 'model-a', 'evidence_mode': 'fixed'}}), encoding='utf-8')
+        (runs / good / 'status.json').write_text(json.dumps({'status': 'complete', 'answer': True}), encoding='utf-8')
+        (runs / good / 'context.json').write_text(json.dumps({'question': 'Readable'}), encoding='utf-8')
+        (runs / good / 'answer.md').write_text('Synthetic [U1]', encoding='utf-8')
+        (runs / broken / 'request.json').write_text('{not json', encoding='utf-8')
+        (runs / bare / 'request.json').write_text(json.dumps({'question': 'No prompt saved'}), encoding='utf-8')
+        (runs / bare / 'context.json').write_text('[]', encoding='utf-8')
+        code, body, _ = self.request('/api/runs')
+        self.assertEqual(code, 200)
+        listed = {row['id']: row for row in json.loads(body)}
+        self.assertNotIn(broken, listed)
+        self.assertEqual((listed[good]['question'], listed[good]['status']), ('Readable', 'complete'))
+        self.assertEqual(listed[bare]['status'], 'interrupted')
+        code, body, _ = self.request('/api/runs/' + good)
+        value = json.loads(body)
+        self.assertEqual((code, value['prompt']), (200, ''))
+        self.assertEqual(value['meta'], {'created': '2026-10-31T00:00:01+00:00', 'llm_model': 'model-a',
+                                         'evidence_mode': 'fixed', 'answer': True})
+        code, body, _ = self.request('/api/runs/' + bare)
+        self.assertEqual(code, 500)
+        self.assertIn('could not be read', json.loads(body)['error'])
 
     def test_upload_embeds_explicit_units_and_preserves_sources(self):
         data = (ROOT / 'examples/corpus.jsonl').read_bytes()

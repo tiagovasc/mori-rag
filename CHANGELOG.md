@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-11-01: Redesigned interface, live ratings and a source reader
+
+Every screen of the local interface is redesigned from the ground up.
+
+- **One app with five places.** A rail holds **New inquiry**, **Inquiries**, **Sources**, **Settings** and recent inquiries; on phones it becomes a drawer. Each screen has its own address (`#/new`, `#/progress`, `#/inquiry/<id>`, `#/library`, `#/sources`, `#/settings`), so Back, reloads and links work. **N** starts a new inquiry, **/** searches saved inquiries and **Esc** closes the reader or the drawer.
+- **Ask.** The question leads the page. Collections are listed under **Search in** with their passage counts. **Depth** offers Quick, Standard and Deep: Standard is the server's configured counts, Quick and Deep scale them within `max_rating_calls`, and a sentence states what Jev will rate and what the answer will draw on before anything is sent. The individual numbers stay editable in **Settings**, which switches Depth to Custom.
+- **Live progress.** Six stages show their actual counts. A grid has one square per candidate passage, coloured by its Jev rating as each rating arrives, beside a rating histogram and the four strongest passages so far with short excerpts. **Stop** ends the inquiry after the requests already in flight; completed ratings stay cached, so **Try again** reuses them.
+- **Answer.** Citations are U, M or P chips. A check strip confirms that every citation points to evidence Mori supplied and can mark the claims that rest only on summaries. On wide screens, a note beside each claim names its sources.
+- **Source reader.** Clicking a citation opens the source beside the answer: the passage marked inside its complete source unit, the claims it supports, its Jev rating, and **Yes**, **Partly** and **No** to record whether it supports them. Previous and Next step through the citations; each citation has its own address.
+- **Library.** Saved inquiries are grouped by day, with search, result filters (Answered, Evidence only, Stopped) and a collection filter. Answered inquiries show how many cited items have been checked. A stopped inquiry can be asked again in one click.
+- **Design.** Literata for reading and Source Sans 3 for the interface, both bundled under the SIL Open Font License, on a green and lichen palette. Every screen has a phone layout; reduced motion and printing are respected. Messages fade after seven seconds; errors stay until replaced.
+
+Server and engine:
+
+- `mori/live.py` keeps an in-memory board for the running query: each candidate's rating level, rating counts and the strongest passages with excerpts of up to 260 characters. Progress snapshots remain source-free; the board is never written to a run folder, log or progress observer, and a failing board cannot change the result. `GET /api/live` returns it with the job state.
+- `POST /api/cancel` sets a flag the pipeline checks between stages and after each rating. The run is saved with status `stopped` and the progress step reads "Stopped on request".
+- `GET /api/unit?id=` returns one unit's text and passage offsets, without vectors, for the reader.
+- `POST /api/runs/<id>/verdicts` saves yes, partly or no for a citation present in that inquiry's saved context. Verdicts live in `<data>/verdicts/<run id>.json`; saved inquiries are never modified.
+- `/api/runs` adds each inquiry's collections, depth settings, citation counts and checked count, and reports the inquiry still running as `running`. `/api/state` lists the server's `features`, so a refreshed page on a server that has not been restarted hides live ratings, Stop and verdicts with a restart note instead of failing.
+- Fonts come from an allowlisted `/fonts/` route; the content security policy is unchanged.
+
+Verification: 245 automated tests pass (233 before), including new tests for the live board, Stop, the reader endpoint, verdicts, the font allowlist and a submission race that could return the page to Ask while an inquiry ran. An offline Chromium run drove every screen on desktop and phone against a synthetic five-collection room with fake Jev and answer providers: the grid filled while polls arrived every 0.6 seconds, Stop, the reader, verdicts across a fresh tab, citation links, library filters, import and phone layouts all worked without page errors. The new page was also checked against the previous server, and the previous page against the new server. Real Jev and answer providers, private collections, Windows browsers, Firefox, Safari and screen readers were not exercised.
+
 ## 2026-10-31 — Evidence coverage in answers
 
 The answer prompt now asks the model to find support for each part of the question throughout the packet and check other items before reporting missing evidence. It describes how to copy citations directly from evidence headings without suggesting specific numbered IDs.

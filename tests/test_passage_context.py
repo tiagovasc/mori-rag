@@ -314,7 +314,7 @@ const evidence=app.el('evidence-view').children[0];
 assert.equal(evidence.dataset.citation,'P1');assert.equal(evidence.children[2].textContent,saved.context.passages[0].context.text);
 assert.equal(evidence.children[2].textContent.split('Middle words.').length-1,1);
 assert.match(evidence.children[1].textContent,/2-word passage.*5 words with context/);
-assert.ok(app.el('answer-view').children[0].children.some(child=>child.textContent==='[P1]'));
+assert.ok(app.el('answer-view').children[0].children.some(child=>child.textContent==='P1'&&child.attributes['aria-label']==='Show evidence P1'));
 """)
 
     def test_ui_keeps_legacy_saved_passages_readable(self):

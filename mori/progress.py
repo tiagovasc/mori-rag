@@ -103,7 +103,7 @@ class Progress:
             self._step(stage).update(status='skipped', completed=0, total=0, message=message)
             self._publish()
 
-    def fail(self):
+    def fail(self, message=None):
         with self._lock:
             if self._state['finished_at']:
                 return
@@ -111,7 +111,8 @@ class Progress:
             if stage is None:
                 stage = next((row['id'] for row in self._state['steps'] if row['status'] == 'pending'), None)
             if stage:
-                self._step(stage).update(status='failed', message='This step could not finish. Completed work is preserved.')
+                self._step(stage).update(status='failed', message=message if isinstance(message, str) and message
+                                         else 'This step could not finish. Completed work is preserved.')
             self._state.update(current_stage=stage, finished_at=timestamp())
             self._publish()
 

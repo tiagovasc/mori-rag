@@ -167,7 +167,7 @@ class Store:
                   count(*) AS units, coalesce(sum(c.n),0) AS chunks
                 FROM units AS u
                 LEFT JOIN (SELECT unit_id,count(*) AS n FROM chunks GROUP BY unit_id) AS c ON c.unit_id=u.id
-                GROUP BY u.source_id ORDER BY label,u.source_id
+                GROUP BY u.source_id ORDER BY label COLLATE NOCASE,label,u.source_id
             """)]
 
     def select_sources(self, identifiers):
@@ -197,6 +197,25 @@ class Store:
 
     def units(self):
         return self._units()
+
+    def unit_text(self, unit_id):
+        """One unit's original text and passage offsets, for reading a citation in context (no vectors)."""
+        if not isinstance(unit_id, str) or not unit_id:
+            return None
+        with self.connect() as db:
+            row = db.execute("SELECT id,source_id,title,kind,locator,text,summary,metadata FROM units WHERE id=?",
+                             (unit_id,)).fetchone()
+            if row is None:
+                return None
+            passages = [dict(r) for r in db.execute(
+                "SELECT id,seq,start,end FROM chunks WHERE unit_id=? ORDER BY seq", (unit_id,))]
+        result = dict(row)
+        try:
+            result['metadata'] = json.loads(result['metadata'])
+        except (TypeError, ValueError):
+            result['metadata'] = {}
+        result['passages'] = passages
+        return result
 
     def _chunks(self, source_ids=None):
         where, values = _source_filter(source_ids, 'u')

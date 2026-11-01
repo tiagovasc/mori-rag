@@ -1,19 +1,173 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="mori-token" content="__MORI_TOKEN__"><title>Mori · Research room</title><link rel="stylesheet" href="/styles.css"><script src="/app.js" defer></script></head>
-<body><aside><a href="/" class="brand">mori<span>RAG with whole-source context</span></a><p class="eyebrow">YOUR CORPUS</p><p id="stats">Loading corpus…</p><details id="add-sources" hidden><summary>Add sources</summary><p>Import JSONL units with summaries, or upload a document and generate its summary with your configured model.</p><label>Source files<input id="files" type="file" multiple accept=".jsonl,.md,.txt,.html,.htm,.pdf,.docx,.vtt,.srt"></label><label>Units<select id="split"><option value="whole">One unit per file</option><option value="headings">Markdown level-two sections</option></select></label><label class="check"><input id="summarize" type="checkbox">Generate missing summaries</label><button id="upload">Import and embed</button><small>Sources stay local unless sent to a configured provider.</small></details><p class="eyebrow">SAVED INQUIRIES</p><nav id="history" aria-label="Saved inquiries"></nav><p id="history-status" role="status"></p><p class="aside-foot">Local research room<br>Provider credentials stay on the server.</p></aside>
-<main><header><span>THE SOURCE BEFORE THE ANSWER</span><span id="providers"></span></header><section class="intro"><p class="eyebrow">RETRIEVE. READ IN CONTEXT. RESPOND.</p><h1>Keep the argument<br>with the evidence.</h1><p>Search passages. Rank complete summaries. Read the strongest source in full.</p></section><section id="composer" class="composer" aria-label="Research question"><label for="question">What would you like to understand?</label><textarea id="question" maxlength="4000" rows="3" placeholder="Ask a question of your corpus"></textarea>
-<details id="sources"><summary>Sources <span id="source-count">Loading…</span></summary><fieldset id="source-picker" aria-label="Search sources" aria-describedby="source-summary source-error" disabled><div class="source-actions"><button id="sources-all" type="button" class="secondary">Select all</button><button id="sources-none" type="button" class="secondary">Select none</button></div><div id="source-options" class="source-options"></div><p id="source-summary" role="status" aria-live="polite">Loading sources...</p></fieldset></details><p id="source-error" role="alert" hidden></p>
-<details id="settings"><summary>Settings</summary><label for="llm_model">LLM model</label><select id="llm_model" aria-describedby="model-help model-error" disabled><option value="">Loading models…</option></select><small id="model-help">Used for answers and optional reranking.</small>
-<label class="check"><input type="checkbox" id="query_expansion" aria-describedby="extension-help" disabled>Prompt extension</label><small id="extension-help">Off by default. Search the original question plus four additional phrasings, using one extra model call even when only building evidence. Jev and the answer use your original question. Requires a configured LLM.</small>
-<label for="evidence_mode">Evidence size</label><select id="evidence_mode" aria-describedby="budget-help" disabled><option value="fixed">Fixed passage counts</option><option value="context">Fill context budget</option></select>
-<div id="context-controls" class="fields" hidden><label for="context_window_tokens">Context window (tokens)<input id="context_window_tokens" type="number" min="1" max="2000000" step="1" value="100000"></label><label for="llm_max_output_tokens">Reserve for answer (tokens)<input id="llm_max_output_tokens" type="number" min="1" step="1" value="4096"></label></div><p id="budget-help">Choose fixed passage counts or fill a context budget.</p>
-<div id="fields" class="fields"></div><label class="check"><input type="checkbox" id="rerank_enabled">Use the selected LLM to rerank Jev’s shortlist</label><label class="check"><input type="checkbox" id="exclude_full_unit_passages" checked>Exclude passages already included in a complete unit</label></details><p id="model-error" role="alert" hidden></p><p id="budget-error" role="alert" hidden></p><div class="actions"><button id="plan" class="secondary">Review query budget</button><button id="retrieve" class="secondary">Build evidence</button><button id="answer">Build and answer</button></div></section><p id="status" role="status" aria-live="polite"></p>
-<section id="workflow" class="workflow" aria-labelledby="workflow-title" hidden>
-<div class="workflow-heading"><h2 id="workflow-title">Building your inquiry</h2><span id="workflow-elapsed"></span></div>
-<div class="workflow-overview"><span id="workflow-current">Preparing your request</span><span id="workflow-summary"></span></div>
-<label for="workflow-progress" class="sr-only">Workflow progress</label><progress id="workflow-progress" max="100" aria-describedby="workflow-note"></progress>
-<div class="workflow-meta"><span id="workflow-connection"></span><span id="workflow-note">Progress measures workflow steps, not time remaining.</span></div>
-<p id="workflow-wait"></p><ol id="workflow-steps" aria-label="Workflow steps"></ol>
-<p id="workflow-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
-</section>
-<section id="result" hidden><div class="result-head"><h2 id="result-title">Research</h2><button id="download" class="secondary">Download packet</button></div><div id="counts" class="chips"></div><div id="context-usage" hidden><label for="context-progress">Context budget <span id="context-usage-summary"></span></label><progress id="context-progress" max="100" value="0" aria-describedby="context-usage-detail"></progress><p id="context-usage-detail"></p></div><p id="notices"></p><details id="search-phrasings" hidden><summary>Search phrasings</summary><p>These phrasings guided retrieval. Generated and hypothetical text is a search hint, not source evidence.</p><ol id="search-phrasing-list"></ol></details><div role="tablist" aria-label="Research views"><button role="tab" id="answer-tab" aria-controls="answer-view" aria-selected="true">Answer</button><button role="tab" id="evidence-tab" aria-controls="evidence-view" aria-selected="false">Evidence</button><button role="tab" id="prompt-tab" aria-controls="prompt-view" aria-selected="false">Model handoff</button></div><article id="answer-view" role="tabpanel" aria-labelledby="answer-tab"></article><div id="evidence-view" role="tabpanel" aria-labelledby="evidence-tab" hidden></div><div id="prompt-view" role="tabpanel" aria-labelledby="prompt-tab" hidden><p>Copy or download this prompt for an external LLM. It contains the complete evidence packet.</p><pre id="prompt"></pre></div></section><footer>Relevance is a ranking judgment, not a probability of correctness. Always check the original source.</footer></main></body></html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="mori-token" content="__MORI_TOKEN__"><title>Mori</title><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23245b44%27/%3E%3Ctext x=%2716%27 y=%2722%27 text-anchor=%27middle%27 font-family=%27Georgia,serif%27 font-size=%2718%27 fill=%27%23f4f8f5%27%3Em%3C/text%3E%3C/svg%3E"><link rel="stylesheet" href="/styles.css"><script src="/app.js" defer></script></head>
+<body>
+<div class="app" id="app">
+<aside class="rail" id="rail" aria-label="Mori">
+ <div class="rail-top"><a class="wordmark" href="#/new" aria-label="Mori, new inquiry">mori</a><button id="menu-close" class="icon-button rail-close" type="button" aria-label="Close menu"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+ <p id="room" class="room">Research room</p>
+ <a id="new-inquiry" class="new" href="#/new"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New inquiry</span><kbd aria-hidden="true">N</kbd></a>
+ <nav class="nav" aria-label="Sections">
+  <a id="nav-library" href="#/library"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14M5 12h14M5 17.5h9"/></svg><span>Inquiries</span><span id="nav-library-count" class="count"></span></a>
+  <a id="nav-sources" href="#/sources"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5.5a1 1 0 0 1 1-1h5.5a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 0-1.5-1.5H5a1 1 0 0 0-1 1zM20 19V5.5a1 1 0 0 0-1-1h-5.5A1.5 1.5 0 0 0 12 6v14a1.5 1.5 0 0 1 1.5-1.5H19a1 1 0 0 1 1 1z"/></svg><span>Sources</span><span id="nav-sources-count" class="count"></span></a>
+  <a id="nav-settings" href="#/settings"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>Settings</span></a>
+ </nav>
+ <h2 class="rail-label" id="recent-label">Recent</h2>
+ <nav id="recent" class="recent" aria-labelledby="recent-label"></nav>
+ <div class="rail-status"><p id="providers"></p><p id="stats">Loading corpus…</p><p class="rail-note">Runs on this computer. Provider credentials stay on the server.</p></div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+<main class="sheet" id="sheet">
+ <header class="topbar" id="topbar">
+  <button id="menu" type="button" class="icon-button menu-button" aria-label="Open menu" aria-controls="rail"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  <a id="back" class="crumb-back" href="#/library" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"/></svg><span>Inquiries</span></a>
+  <p id="crumb" class="crumb">New inquiry</p>
+  <div id="views" class="views" role="tablist" aria-label="Research views" hidden><button role="tab" type="button" id="answer-tab" aria-controls="answer-view" aria-selected="true" tabindex="0">Answer</button><button role="tab" type="button" id="evidence-tab" aria-controls="evidence-view" aria-selected="false" tabindex="-1">Evidence<small id="evidence-count"></small></button><button role="tab" type="button" id="prompt-tab" aria-controls="prompt-view" aria-selected="false" tabindex="-1"><span class="wide-label">Model handoff</span><span class="narrow-label">Handoff</span></button></div>
+  <div class="grow"></div>
+  <div class="topbar-actions" id="progress-actions" hidden><span id="workflow-elapsed" class="elapsed"></span><button id="workflow-retry" type="button" class="btn" hidden>Try again</button><button id="stop" type="button" class="btn" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg><span id="stop-label">Stop</span></button></div>
+  <div class="topbar-actions" id="result-actions" hidden><button id="copy-answer" type="button" class="btn ghost" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M5 15.5V6a1 1 0 0 1 1-1h9.5"/></svg><span>Copy answer</span></button><button id="download" type="button" class="btn ghost"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M8 11l4 4 4-4M5 19h14"/></svg><span>Download packet</span></button><button id="ask-again" type="button" class="btn"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4.5H15"/></svg><span>Ask again</span></button></div>
+ </header>
+ <div class="screens" id="screens">
+
+ <section id="screen-ask" class="screen screen-ask" aria-labelledby="ask-title">
+  <section id="composer" class="composer" aria-label="Research question">
+   <h1 id="ask-title" class="sr-only">New inquiry</h1>
+   <p id="empty-corpus" class="notice" hidden></p>
+   <label for="question" class="sr-only">Your question</label>
+   <textarea id="question" class="question" maxlength="4000" rows="2" placeholder="What do you want to find out from your sources?" aria-describedby="question-hint question-count"></textarea>
+   <div class="question-foot"><span id="question-hint">Mori answers only from your sources and cites every claim.</span><small id="question-count" aria-live="polite" hidden></small></div>
+   <div class="brief">
+    <div class="brief-col">
+     <fieldset id="source-picker" class="collections" aria-label="Search sources" aria-describedby="source-summary source-error" disabled>
+      <div class="col-h"><h2>Search in</h2><span id="source-count">Loading…</span></div>
+      <div id="source-options" class="source-options"></div>
+      <div class="source-actions"><button id="sources-all" type="button" class="link">Select all</button><button id="sources-none" type="button" class="link">Select none</button></div>
+      <p id="source-summary" class="source-summary" role="status" aria-live="polite">Loading sources…</p>
+     </fieldset>
+     <p id="source-error" class="alert" role="alert" hidden></p>
+    </div>
+    <div class="brief-col">
+     <div class="col-h"><h2 id="depth-label">Depth</h2><span>How much Mori reads first</span></div>
+     <div id="depth" class="depth" role="radiogroup" aria-labelledby="depth-label">
+      <label class="opt"><input type="radio" name="depth" value="quick" id="depth-quick"><span><b>Quick</b><small id="depth-quick-text"></small></span></label>
+      <label class="opt"><input type="radio" name="depth" value="standard" id="depth-standard" checked><span><b>Standard</b><small id="depth-standard-text"></small></span></label>
+      <label class="opt"><input type="radio" name="depth" value="deep" id="depth-deep"><span><b>Deep</b><small id="depth-deep-text"></small></span></label>
+      <p id="depth-custom" class="depth-custom" hidden>Custom numbers from Settings are in use. <button id="depth-reset" type="button" class="link">Use Standard</button></p>
+     </div>
+     <div class="model-row"><label for="llm_model">Answer model</label><select id="llm_model" aria-describedby="model-help model-error" disabled><option value="">Loading models…</option></select></div>
+     <small id="model-help" class="help">Used for answers and optional reranking.</small>
+     <a id="advanced-link" class="adv" href="#/settings"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>Advanced settings</span><small id="advanced-summary">relevance thresholds, neighbours, reranking</small></a>
+    </div>
+   </div>
+   <p id="model-error" class="alert" role="alert" hidden></p><p id="budget-error" class="alert" role="alert" hidden></p>
+   <div class="actions">
+    <button id="answer" type="button" class="btn primary lg" title="Answer (Ctrl+Enter)" aria-keyshortcuts="Control+Enter">Answer<kbd aria-hidden="true">Ctrl Enter</kbd></button>
+    <button id="retrieve" type="button" class="btn lg">Gather evidence only</button>
+    <div class="cost-box"><p id="cost" class="cost"></p><button id="plan" type="button" class="link">Cost details</button></div>
+   </div>
+   <p id="answer-hint" class="notice" hidden>No answer model is configured for this room. Gather the evidence, then copy the prompt from Model handoff into your own model.</p>
+  </section>
+  <p class="footnote">Relevance is Jev’s ranking judgment, not a probability that a claim is true. Check the source before you rely on it.</p>
+ </section>
+
+ <section id="workflow" class="screen screen-progress" aria-labelledby="workflow-title" hidden>
+  <h1 id="run-question" class="run-question"></h1>
+  <p id="run-meta" class="run-meta"></p>
+  <div class="run-status"><h2 id="workflow-title" class="run-state">Building your inquiry</h2><span id="workflow-current" class="run-current">Preparing your request</span><span id="workflow-connection" class="run-connection"></span></div>
+  <p id="workflow-wait" class="run-wait"></p>
+  <label for="workflow-progress" class="sr-only">Workflow progress</label><progress id="workflow-progress" class="sr-only" max="100" aria-describedby="workflow-note"></progress>
+  <ol id="stages" class="stages" aria-label="Inquiry stages"></ol>
+  <div class="run-body" id="run-body">
+   <section class="ratings" id="ratings" aria-labelledby="ratings-title">
+    <div class="panel-h"><h3 id="ratings-title">How the rated passages score</h3><span>One square per candidate, in search order</span></div>
+    <div class="ratings-grid"><canvas id="grid" class="grid" role="img" aria-label="Ratings will appear as Jev rates candidates"></canvas><div id="hist" class="hist"></div></div>
+    <p id="rated-summary" class="rated-summary"></p>
+   </section>
+   <section class="strongest" id="strongest-panel" aria-labelledby="strongest-title">
+    <div class="panel-h"><h3 id="strongest-title">Strongest so far</h3><span id="strongest-live"><i class="live-dot"></i>updates as Jev rates</span></div>
+    <ol id="strongest" class="strongest-list"></ol>
+    <p id="strongest-empty" class="empty">The strongest passages appear here as Jev rates them.</p>
+   </section>
+   <p id="live-fallback" class="notice" hidden>Live ratings need this room’s updated server. Restart the room to see each rating as it arrives and to use Stop.</p>
+  </div>
+  <details id="workflow-details" class="steps" open><summary id="workflow-details-summary">Workflow steps</summary><ol id="workflow-steps" aria-label="Workflow steps"></ol><p class="steps-foot"><span id="workflow-summary"></span><span id="workflow-note">Progress measures completed work, not time remaining.</span></p></details>
+  <p id="workflow-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+ </section>
+
+ <section id="result" class="screen screen-inquiry" aria-labelledby="result-title" hidden>
+  <header class="result-head"><h1 id="result-title" tabindex="-1">Research</h1><p id="result-meta" hidden></p></header>
+  <div id="check" class="check" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12.3l2.8 2.8L16.2 9.6"/></svg><p id="check-text"></p><span id="check-mix" class="mix" aria-hidden="true"></span><span id="check-keys" class="keys"></span><label id="mark-label" class="toggle" hidden><input id="mark-summaries" type="checkbox"><span class="switch" aria-hidden="true"></span><span>Mark claims that rest only on summaries</span></label></div>
+  <div class="result-facts"><div id="counts" class="chips"></div><p id="notices"></p></div>
+  <div id="context-usage" class="context-usage" hidden><label for="context-progress">Context budget <span id="context-usage-summary"></span></label><progress id="context-progress" max="100" value="0" aria-describedby="context-usage-detail"></progress><p id="context-usage-detail"></p></div>
+  <details id="search-phrasings" class="phrasings" hidden><summary>Search phrasings</summary><p>These phrasings guided retrieval. Generated and hypothetical text is a search hint, not source evidence.</p><ol id="search-phrasing-list"></ol></details>
+  <div id="answer-panel" class="answer-layout">
+   <article id="answer-view" class="answer" role="tabpanel" aria-labelledby="answer-tab"></article>
+   <aside id="notes" class="notes" aria-label="Cited evidence"></aside>
+   <aside id="reader" class="reader" aria-labelledby="reader-title" hidden>
+    <div class="reader-top"><button id="reader-prev" type="button" class="icon-button" aria-label="Previous citation"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6"/></svg></button><button id="reader-next" type="button" class="icon-button" aria-label="Next citation"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6l6 6-6 6"/></svg></button><span id="reader-position" class="reader-position"></span><span class="grow"></span><button id="reader-copy" type="button" class="btn ghost"><span>Copy quote</span></button><button id="reader-close" type="button" class="icon-button" aria-label="Close the reader"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <div class="reader-body" id="reader-body">
+     <p id="reader-kind" class="reader-kind"></p>
+     <h2 id="reader-title" class="reader-title"></h2>
+     <dl id="reader-meta" class="reader-meta"></dl>
+     <section id="reader-cited" class="cited" hidden><h3 id="reader-cited-title"></h3><div id="reader-claims"></div><div id="verdict" class="verdict" hidden><span id="verdict-question">Does this passage support them?</span><span class="verdict-buttons" role="group" aria-labelledby="verdict-question"><button type="button" data-verdict="yes" aria-pressed="false">Yes</button><button type="button" data-verdict="partly" aria-pressed="false">Partly</button><button type="button" data-verdict="no" aria-pressed="false">No</button></span></div></section>
+     <div class="src-h"><h3 id="reader-source-label">In the source</h3><button id="reader-full" type="button" class="link" hidden>Read the complete source</button></div>
+     <div id="reader-text" class="srctext"></div>
+    </div>
+   </aside>
+   <svg id="wire" class="wire" aria-hidden="true"><path id="wire-path" d=""/><circle id="wire-dot" r="2.5" cx="0" cy="0"/></svg>
+  </div>
+  <div id="evidence-view" class="evidence" role="tabpanel" aria-labelledby="evidence-tab" hidden></div>
+  <div id="prompt-view" class="handoff" role="tabpanel" aria-labelledby="prompt-tab" hidden><div class="panel-tools"><p>Paste this prompt into another model. It contains the complete evidence packet.</p><div class="panel-buttons"><button id="copy-prompt" type="button" class="btn">Copy prompt</button><button id="download-prompt" type="button" class="btn">Download .txt</button></div></div><pre id="prompt"></pre></div>
+ </section>
+
+ <section id="screen-library" class="screen screen-library" aria-labelledby="library-title" hidden>
+  <div class="lib-main">
+   <div class="lib-head"><h1 id="library-title">Inquiries</h1><span id="library-count"></span></div>
+   <label class="find"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg><input id="library-search" type="search" placeholder="Search your questions" aria-label="Search saved inquiries" autocomplete="off"><kbd aria-hidden="true">/</kbd></label>
+   <div class="filters"><div class="chips-row" id="library-filters" role="group" aria-label="Filter by result"><button type="button" class="chip" data-filter="all" aria-pressed="true">All<small id="filter-all"></small></button><button type="button" class="chip" data-filter="answer" aria-pressed="false">Answered<small id="filter-answer"></small></button><button type="button" class="chip" data-filter="evidence" aria-pressed="false">Evidence only<small id="filter-evidence"></small></button><button type="button" class="chip" data-filter="stopped" aria-pressed="false">Stopped<small id="filter-stopped"></small></button></div><select id="library-collection" aria-label="Filter by collection"><option value="">Any collection</option></select></div>
+   <div class="lib-cols" aria-hidden="true"><span>Question</span><span>Result</span><span>When</span></div>
+   <nav id="history" class="history" aria-label="Saved inquiries"></nav>
+   <p id="history-status" role="status"></p>
+   <p id="library-empty" class="empty" hidden></p>
+  </div>
+  <aside id="library-sources" class="lib-side" aria-labelledby="sources-title">
+   <h2 id="sources-title">Sources</h2>
+   <p id="library-total" class="lib-total"></p>
+   <div id="collections" class="collections-list"></div>
+   <details id="add-sources" class="add-sources" hidden><summary>Add sources</summary>
+    <div id="dropzone" class="dropzone"><p class="drop-title">Drop a file here, or choose one</p><p class="drop-note">PDF, Word, Markdown, HTML, plain text, subtitles or Mori JSONL, up to 8 MB. A JSONL file can hold many source units.</p>
+     <label class="file-label">Source file<input id="files" type="file" accept=".jsonl,.md,.txt,.html,.htm,.pdf,.docx,.vtt,.srt"></label>
+     <label class="split-label">Units<select id="split"><option value="whole">One unit per file</option><option value="headings">One unit per level-two Markdown section</option></select></label>
+     <label class="check"><input id="summarize" type="checkbox"><span>Write missing summaries with the answer model</span></label>
+     <button id="upload" type="button" class="btn primary">Import and index</button>
+     <p class="drop-note">Files stay on this computer unless a configured provider writes their summaries.</p>
+    </div>
+   </details>
+   <p id="uploads-off" class="lib-note" hidden>Importing is turned off in this room.</p>
+  </aside>
+ </section>
+
+ <section id="screen-settings" class="screen screen-settings" aria-labelledby="settings-title" hidden>
+  <h1 id="settings-title">Settings</h1>
+  <p class="lede">These settings apply to your next inquiries in this tab. Depth on the question screen fills the numbers below; changing a number switches depth to Custom.</p>
+  <div id="settings" class="settings">
+   <section class="set-group"><h2>Search</h2>
+    <label class="check"><input type="checkbox" id="query_expansion" aria-describedby="extension-help" disabled><span>Prompt extension</span></label><small id="extension-help" class="help">Off by default. Searches your question plus four other phrasings, which costs one extra model call even when you only gather evidence. Jev and the answer always use your own question. Needs an answer model.</small>
+    <label class="check"><input type="checkbox" id="rerank_enabled"><span>Use the answer model to rerank Jev’s shortlist</span></label>
+    <label class="check"><input type="checkbox" id="exclude_full_unit_passages" checked><span>Leave out passages already inside a complete source</span></label>
+   </section>
+   <section class="set-group"><h2>Evidence size</h2>
+    <label for="evidence_mode">How much evidence goes to the model</label><select id="evidence_mode" aria-describedby="budget-help" disabled><option value="fixed">Fixed passage counts</option><option value="context">Fill a context budget</option></select>
+    <div id="context-controls" class="fields" hidden><label for="context_window_tokens">Context window (tokens)<input id="context_window_tokens" type="number" min="1" max="2000000" step="1" value="100000"></label><label for="llm_max_output_tokens">Reserve for the answer (tokens)<input id="llm_max_output_tokens" type="number" min="1" step="1" value="4096"></label></div>
+    <p id="budget-help" class="help">Choose fixed passage counts or fill a context budget.</p>
+   </section>
+   <section class="set-group"><h2>Counts and thresholds</h2><div id="fields" class="fields"></div></section>
+   <section class="set-group"><h2>This room</h2><dl id="room-facts" class="facts"></dl></section>
+  </div>
+  <p class="settings-back"><a class="btn" href="#/new">Back to the question</a></p>
+ </section>
+
+ </div>
+ <p id="status" class="toast" role="status" aria-live="polite"></p>
+</main>
+</div>
+</body></html>

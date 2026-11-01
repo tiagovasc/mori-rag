@@ -19,6 +19,10 @@ A source can contain many units. Each stored unit ID is immutable: its hash bind
 
 When `--summarize` reimports an unchanged unit, its persisted summary and generated provenance are reused without another model call. Source-field changes still require a new version. Every summary-segment vector is validated and normalized; segments use the configured embedding batch size, and current retrieval uses the best matching child rather than a mean-vector ranking. Legacy fingerprints that omit a requested dimension are treated as the equivalent default of zero; switching between an explicit dimension request and the provider default is rejected.
 
+## Local interface
+
+The local server serves one page and a small JSON API. Progress snapshots stay source-free. While a query runs, an in-memory board (`mori/live.py`) records each candidate's rating level, the rating counts and the strongest passages with short excerpts; `/api/live` serves it to the progress screen, and it is never written to disk. Stop sets a cancellation flag that the pipeline checks between stages and after each rating; the run is saved as `stopped` and completed ratings remain cached. The reader asks the store for one unit's text and passage offsets (`/api/unit`). Citation verdicts are written to `verdicts/<run id>.json` in the data directory, outside the run folders, which stay unchanged.
+
 ## Reference implementation and scale
 
 Python owns orchestration; providers are small independent adapters. SQLite stores units, exact chunk text, normalized vectors and decision cache. Exact cosine scoring is dependency-free but scans the collection; it is not an ANN index. Threaded relevance calls have configurable bounded concurrency. The local server admits one import/query job at a time; CLI callers should avoid concurrent writes to one data directory.

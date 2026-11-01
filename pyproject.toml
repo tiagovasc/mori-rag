@@ -25,4 +25,4 @@ mori = "mori.cli:main"
 include = ["mori*"]
 
 [tool.setuptools.package-data]
-mori = ["static/*", "presets/*.toml"]
+mori = ["static/*", "static/fonts/*", "presets/*.toml"]
